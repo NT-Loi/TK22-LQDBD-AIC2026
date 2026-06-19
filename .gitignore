@@ -4,5 +4,6 @@ __pycache__
 
 query-p1-groupA
 data
+qdrant
 
 *.log
