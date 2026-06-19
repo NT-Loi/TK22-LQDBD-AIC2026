@@ -1,0 +1,1 @@
+from .setup_qdrant import setup_qdrant_collection
