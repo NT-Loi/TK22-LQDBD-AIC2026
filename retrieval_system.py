@@ -23,7 +23,7 @@ from qdrant_client.models import PointStruct
 
 from data_processor.text_encoder import *
 
-from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, QDRANT_COLLECTION_NAME, VECTOR_SIZES, EMBEDDING_WEIGHTS
+from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, QDRANT_COLLECTION_NAME, VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP
 from utils import setup_qdrant_collection
 import json
 import bisect
@@ -175,7 +175,7 @@ class RetrievalSystem:
                 
         return encoded_vectors
 
-    def semantic_search(self, query: str, model_names: list = None, top_k: int = 1000):
+    def semantic_search(self, query: str, model_names: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
         logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}.")
         
         # Encode query
@@ -238,6 +238,9 @@ class RetrievalSystem:
         
         results = []
         for point_id, total_score in ranked_points:
+            if total_score < score_threshold:
+                continue
+                
             payload = all_payloads[point_id]
             video_id = payload.get("video_id")
             keyframe_idx = payload.get("keyframe_idx", payload.get("frame_idx"))
@@ -262,7 +265,130 @@ class RetrievalSystem:
                 "shot_end_frame": shot_end
             })
             
-        return results
+        if group_by_shot:
+            shot_dict = {}
+            for item in results:
+                key = (item["video_id"], item["shot_start_frame"], item["shot_end_frame"])
+                if key not in shot_dict:
+                    shot_dict[key] = []
+                shot_dict[key].append(item)
+                
+            grouped_results = []
+            for (vid, start, end), items in shot_dict.items():
+                avg_score = sum(i["score"] for i in items) / len(items)
+                items.sort(key=lambda x: x["keyframe_index"])
+                anchor = items[0]
+                grouped_results.append({
+                    "type": "shot",
+                    "video_id": vid,
+                    "score": avg_score,
+                    "frames": items,
+                    "keyframe_index": anchor["keyframe_index"],
+                    "shot_start_frame": start,
+                    "shot_end_frame": end
+                })
+                
+            grouped_results.sort(key=lambda x: x["score"], reverse=True)
+            return grouped_results[:limit]
+            
+        return results[:limit]
+
+    def temporal_search(self, queries: list, model_names: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100):
+        logger.info(f"Performing temporal search for {len(queries)} queries with group_by_shot={group_by_shot}")
+        
+        # 1. Search each query
+        query_results = []
+        for q in queries:
+            # We get more than 1000 to ensure we have enough paths, or keep it 1000
+            res = self.semantic_search(q, model_names=model_names, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot)
+            query_results.append(res)
+            
+        # 2. Group by video
+        video_grouped = {}
+        for q_idx, res_list in enumerate(query_results):
+            for item in res_list:
+                vid = item["video_id"]
+                if vid not in video_grouped:
+                    video_grouped[vid] = [[] for _ in range(len(queries))]
+                video_grouped[vid][q_idx].append(item)
+                
+        # 3. Find valid paths via DFS for each video
+        all_sequences = []
+        
+        for vid, vid_group in video_grouped.items():
+            # If any query has no results for this video, skip
+            if any(len(q_res) == 0 for q_res in vid_group):
+                continue
+            
+            # Items are already aggregated if group_by_shot=True
+            for i in range(len(queries)):
+                if group_by_shot:
+                    vid_group[i].sort(key=lambda x: x["shot_start_frame"])
+                else:
+                    vid_group[i].sort(key=lambda x: x["keyframe_index"])
+            vid_group_to_search = vid_group
+            
+            def find_paths(current_q_idx, current_path):
+                if current_q_idx == len(queries):
+                    all_sequences.append(list(current_path))
+                    return
+                    
+                for candidate in vid_group_to_search[current_q_idx]:
+                    if len(current_path) == 0:
+                        current_path.append(candidate)
+                        find_paths(current_q_idx + 1, current_path)
+                        current_path.pop()
+                    else:
+                        prev = current_path[-1]
+                        valid = False
+                        
+                        if not group_by_shot:
+                            gap = candidate["keyframe_index"] - prev["keyframe_index"]
+                            if 0 < gap <= MAX_FRAME_GAP:
+                                valid = True
+                        else:
+                            # gap between shots logic
+                            if candidate["shot_start_frame"] > prev["shot_end_frame"]:
+                                gap = candidate["shot_start_frame"] - prev["shot_end_frame"]
+                                if gap <= MAX_FRAME_GAP:
+                                    valid = True
+                                    
+                        if valid:
+                            current_path.append(candidate)
+                            find_paths(current_q_idx + 1, current_path)
+                            current_path.pop()
+
+            find_paths(0, [])
+            
+        # 4. Format output
+        final_results = []
+        for seq in all_sequences:
+            avg_score = sum(item["score"] for item in seq) / len(seq)
+            
+            if group_by_shot:
+                flat_frames = []
+                for cand in seq:
+                    sorted_items = sorted(cand["frames"], key=lambda x: x["keyframe_index"])
+                    flat_frames.extend(sorted_items)
+                anchor = flat_frames[0]
+            else:
+                flat_frames = seq
+                anchor = seq[0]
+            
+            final_results.append({
+                "video_id": anchor["video_id"],
+                "sequence_score": avg_score,
+                "frames": flat_frames,
+                # Include standard fields for compatibility if needed
+                "keyframe_index": anchor["keyframe_index"],
+                "shot_start_frame": anchor["shot_start_frame"],
+                "shot_end_frame": anchor["shot_end_frame"],
+                "score": avg_score, 
+            })
+            
+        # Sort sequences by avg_score
+        final_results = sorted(final_results, key=lambda x: x["sequence_score"], reverse=True)
+        return final_results[:limit]
 
 if __name__ == "__main__":
     system = RetrievalSystem(re_ingest=True)

@@ -43,6 +43,9 @@ class SearchQuery(BaseModel):
     models: List[str]
     objects: list
     audio: str
+    group_by_shot: bool = False
+    score_threshold: float = 0.3
+    limit: int = 100
 
 @app.get("/")
 async def index(request: Request):
@@ -66,16 +69,36 @@ async def search(query: SearchQuery):
     if query.models and "all" not in query.models:
         model_names = query.models
     
-    # Perform search using the primary event query
-    results = system.semantic_search(primary_query, model_names=model_names)
+    if len(query.text_queries) > 1:
+        # Perform temporal search
+        results = system.temporal_search(
+            query.text_queries, 
+            model_names=model_names, 
+            group_by_shot=query.group_by_shot, 
+            score_threshold=query.score_threshold,
+            limit=query.limit
+        )
+    else:
+        # Perform search using the primary event query
+        results = system.semantic_search(
+            primary_query, 
+            model_names=model_names, 
+            score_threshold=query.score_threshold,
+            group_by_shot=query.group_by_shot,
+            limit=query.limit
+        )
     
     # Map results and add accurate FPS for the frontend
     for item in results:
         vid = item.get("video_id")
+        fps = 25.0
         if vid and vid in video_metadata and "fps" in video_metadata[vid]:
-            item["fps"] = video_metadata[vid]["fps"]
-        else:
-            item["fps"] = 25.0  # Fallback
+            fps = video_metadata[vid]["fps"]
+            
+        item["fps"] = fps
+        if "frames" in item:
+            for frame in item["frames"]:
+                frame["fps"] = fps
             
     return results
 

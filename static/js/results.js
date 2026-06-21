@@ -20,8 +20,9 @@ export function displayResults(results, groupShots = false) {
     return;
   }
 
-  if (groupShots) {
-    displayGroupedResults(results);
+  // Since backend handles grouping now, both single-query and temporal grouped results have a "frames" array.
+  if (results[0] && results[0].frames) {
+    displaySequenceResults(results);
   } else {
     displayFlatResults(results);
   }
@@ -108,117 +109,7 @@ function displayFlatResults(results) {
   });
 }
 
-// --- HIỂN THỊ DẠNG GROUP SHOTS ---
-function displayGroupedResults(results) {
-  const groups = {};
-  const criteria = "score";
-  const threshold = 0.3;
 
-  // Grouping Logic
-  results.forEach((item) => {
-    const key = `${item.video_id}|${item.shot_start_frame}|${item.shot_end_frame}`;
-    if (!groups[key]) {
-      groups[key] = {
-        video_id: item.video_id,
-        start_frame: item.shot_start_frame,
-        end_frame: item.shot_end_frame,
-        fps: item.fps,
-        shot_score: 0,
-        items: [],
-        num_valid_items: 0,
-      };
-    }
-    groups[key].items.push(item);
-    if (item[criteria] > threshold) {
-      groups[key].shot_score += item[criteria];
-      groups[key].num_valid_items += 1;
-    }
-  });
-
-  const sortedGroups = Object.values(groups).map((g) => {
-    g.avg_score = g.num_valid_items > 0 ? g.shot_score / g.num_valid_items : 0;
-    return g;
-  }).sort(
-    (a, b) => b.avg_score - a.avg_score,
-  );
-
-  sortedGroups.forEach((group) => {
-    const card = document.createElement("div");
-    card.classList.add("shot-group-card"); // Class này sẽ có position relative
-    const shotKey = `${group.video_id}|${group.start_frame}|${group.end_frame}`;
-    card.setAttribute("data-shot-key", shotKey);
-
-    // Tìm best frame để lấy làm đại diện video preview và tính start time
-    const bestFrame = group.items.reduce(
-      (prev, current) =>
-        (prev[criteria] || 0) > (current[criteria] || 0) ? prev : current,
-      group.items[0],
-    );
-
-    // 1. Hover Preview Container (Giống Flat Result)
-    const previewContainer = document.createElement("div");
-    previewContainer.className = "hover-preview"; // CSS class này đã có sẵn absolute full size
-    const previewVideo = document.createElement("video");
-    previewVideo.muted = true;
-    previewVideo.playsInline = true;
-    Object.assign(previewVideo.style, {
-      width: "100%",
-      height: "100%",
-      objectFit: "cover",
-    });
-    previewContainer.appendChild(previewVideo);
-
-    // 2. Grid Thumbnails
-    let thumbnailItems = shuffleArray([...group.items]).slice(0, 4);
-    if (thumbnailItems.length === 3)
-      thumbnailItems = thumbnailItems.slice(0, 2);
-    const gridClass = `items-${thumbnailItems.length}`;
-
-    let gridHTML = `<div class="shot-thumbnails-grid ${gridClass}">`;
-    thumbnailItems.forEach((itm) => {
-      gridHTML += `<img src="/keyframes/${itm.video_id}/keyframe_${itm.keyframe_index}.webp" loading="lazy">`;
-    });
-    gridHTML += `</div>`;
-
-    // 3. Info
-    const infoHTML = `
-            <div class="shot-info">
-                <h3>${group.video_id}</h3>
-                <div class="shot-stats">
-                    Shot: ${group.start_frame} - ${group.end_frame}<br>
-                    Avg Score: ${group.avg_score.toFixed(3)} | Matches: ${group.num_valid_items}
-                </div>
-            </div>
-        `;
-
-    // Ghép HTML: Preview (ẩn) -> Grid (hiện) -> Info
-    card.innerHTML = gridHTML + infoHTML;
-    // Chèn Preview lên đầu để CSS absolute đè lên Grid
-    card.insertBefore(previewContainer, card.firstChild);
-
-    // --- SETUP HOVER ---
-    // Gọi hàm setup giống hệt flat list
-    setupHoverPreview(card, previewVideo, bestFrame);
-
-    // Click Event
-    card.addEventListener("click", () => {
-      const fps = parseFloat(group.fps) || 25;
-      let startTime = bestFrame.keyframe_index / fps;
-      startTime = Math.max(0, startTime - 0.5);
-
-      const shotData = {
-        items: group.items,
-        shotStart: group.start_frame,
-        shotEnd: group.end_frame,
-      };
-
-      // Group shot không có sequenceData (hoặc có thể có nếu logic phức tạp hơn, tạm để null)
-      openModal(group.video_id, startTime, fps, shotData, null, null);
-    });
-
-    elements.resultsContainer.appendChild(card);
-  });
-}
 
 // --- HELPER FUNCTIONS ---
 function setupHoverPreview(element, videoEl, item) {
@@ -270,6 +161,59 @@ function setupHoverPreview(element, videoEl, item) {
   element.addEventListener("mouseleave", () => {
     clearTimeout(hoverTimeout);
     cleanup();
+  });
+}
+
+function displaySequenceResults(results) {
+  results.forEach((seq) => {
+    const card = document.createElement("div");
+    card.classList.add("shot-group-card"); // Tái sử dụng class này cho layout grid
+    
+    // Grid Thumbnails (show all frames in sequence in order)
+    let displayFrames = seq.frames;
+    const gridClass = `items-${displayFrames.length > 4 ? 4 : displayFrames.length}`;
+    
+    let gridHTML = `<div class="shot-thumbnails-grid ${gridClass}">`;
+    displayFrames.slice(0, 4).forEach((itm) => {
+      gridHTML += `<div style="position:relative; width:100%; height:100%;">
+        <img src="/keyframes/${itm.video_id}/keyframe_${itm.keyframe_index}.webp" loading="lazy" style="width:100%; height:100%; object-fit:cover;">
+        <span style="position:absolute; bottom:2px; right:2px; background:rgba(0,0,0,0.7); color:white; font-size:10px; padding:2px; border-radius:2px;">${itm.keyframe_index}</span>
+      </div>`;
+    });
+    gridHTML += `</div>`;
+
+    // Info
+    const infoHTML = `
+            <div class="shot-info">
+                <h3>${seq.video_id}</h3>
+                <div class="shot-stats">
+                    Matches: ${seq.frames.length}<br>
+                    Avg Score: ${(seq.sequence_score || seq.score).toFixed(3)}
+                </div>
+                <button class="card-submit-btn" style="margin-top: 5px; width:100%; font-size:12px; padding:4px;">Submit Anchor</button>
+            </div>
+        `;
+
+    card.innerHTML = gridHTML + infoHTML;
+
+    // Submit Handler for the anchor (the first frame)
+    const submitBtn = card.querySelector(".card-submit-btn");
+    if (submitBtn) {
+        submitBtn.addEventListener("click", (e) => handleSubmit(e, seq.frames[0]));
+    }
+
+    // Click to Open Modal (use the first frame as anchor)
+    card.addEventListener("click", (e) => {
+      if (e.target.tagName.toLowerCase() === 'button') return;
+      const anchor = seq.frames[0];
+      const fps = parseFloat(anchor.fps) || 25;
+      let startTime = anchor.keyframe_index / fps;
+      startTime = Math.max(0, startTime - 0.5);
+
+      openModal(anchor.video_id, startTime, fps, null, anchor.keyframe_index, seq.frames);
+    });
+
+    elements.resultsContainer.appendChild(card);
   });
 }
 async function handleSubmit(e, item) {

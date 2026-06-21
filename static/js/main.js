@@ -98,14 +98,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     rows.forEach((row, index) => {
       const input = row.querySelector(".main-query-input");
-      const radio = row.querySelector('input[type="radio"]');
       const text = input.value.trim();
 
       if (text) {
         textQueries.push(text);
-        if (radio.checked) {
-          anchorIndex = index; // Xác định dòng nào được chọn để Rank
-        }
       }
     });
 
@@ -126,15 +122,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       anchor_index: anchorIndex, // Index của câu query dùng để sort (trong list textQueries)
       models: selectedModels,
       objects: getObjectQueries(),
-      audio: document.getElementById("audio-filter").value, // Lấy audio filter riêng
+      audio: "", 
+      group_by_shot: isGroupShots,
+      score_threshold: parseFloat(document.getElementById("score-threshold")?.value) || 0.3,
+      limit: parseInt(document.getElementById("result-limit")?.value) || 100
     };
 
     if (
       queryData.text_queries.length === 0 &&
-      !queryData.audio &&
       queryData.objects.length === 0
     ) {
-      alert("Please enter at least one description, audio, or object filter.");
+      alert("Please enter at least one description or object filter.");
       return;
     }
 
@@ -174,7 +172,6 @@ function initDynamicInputs() {
     div.style.marginTop = "5px";
 
     div.innerHTML = `
-            <input type="radio" name="rank_by" value="${newIndex}" title="Rank results by this query">
             <input type="text" name="description_${newIndex}" class="main-query-input" placeholder="Next Event (approx. 1 min later)..." autocomplete="off">
             <button type="button" class="remove-query-btn" style="background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer; padding:0 8px;">X</button>
         `;
@@ -204,14 +201,6 @@ function reindexRows() {
   const rows = elements.queryInputsContainer.querySelectorAll(".query-row");
   rows.forEach((row, index) => {
     row.dataset.index = index;
-    const radio = row.querySelector('input[type="radio"]');
-    radio.value = index;
-    if (
-      index === 0 &&
-      !document.querySelector('input[name="rank_by"]:checked')
-    ) {
-      radio.checked = true; // Đảm bảo luôn có 1 cái được check
-    }
 
     const input = row.querySelector(".main-query-input");
     input.name = `description_${index}`;
