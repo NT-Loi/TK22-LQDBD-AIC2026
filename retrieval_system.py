@@ -4,14 +4,13 @@ import sys
 
 # Configure logging to output to both console and a file called 'app.log'
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("system.log"),
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger(__name__)
 
 import os
 import torch
@@ -27,6 +26,9 @@ from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, QDRANT_COLLECTION_NAM
 from utils import setup_qdrant_collection
 import json
 import bisect
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 class RetrievalSystem:
     def __init__(self, data_dir: str=DATA_DIR, device=None, re_ingest: bool=False):
@@ -55,6 +57,9 @@ class RetrievalSystem:
         for model_name in VECTOR_SIZES.keys():
             if model_name == "CLIP_H14":
                 self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
+
+            if model_name == "SigLIP":
+                self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
 
         # Load shot boundaries
         self.shots_data = {}
@@ -226,12 +231,13 @@ class RetrievalSystem:
             
         # Calculate overall score
         final_scores = {}
+        total_weight = sum(EMBEDDING_WEIGHTS.values())
         for model_name, scores_dict in normalized_results.items():
             weight = EMBEDDING_WEIGHTS.get(model_name)
             for point_id, norm_score in scores_dict.items():
                 if point_id not in final_scores:
                     final_scores[point_id] = 0.0
-                final_scores[point_id] += norm_score * weight
+                final_scores[point_id] += float(norm_score * weight / total_weight)
                 
         # Rank and return
         ranked_points = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
@@ -367,22 +373,28 @@ class RetrievalSystem:
             
             if group_by_shot:
                 flat_frames = []
+                display_frames = []
                 for cand in seq:
                     sorted_items = sorted(cand["frames"], key=lambda x: x["keyframe_index"])
                     flat_frames.extend(sorted_items)
-                anchor = flat_frames[0]
+                    # Best frame per shot for card thumbnail
+                    best_frame = max(cand["frames"], key=lambda x: x["score"])
+                    display_frames.append(best_frame)
+                anchor = display_frames[0]
             else:
                 flat_frames = seq
+                display_frames = seq
                 anchor = seq[0]
             
             final_results.append({
                 "video_id": anchor["video_id"],
                 "sequence_score": avg_score,
                 "frames": flat_frames,
+                "display_frames": display_frames,
                 # Include standard fields for compatibility if needed
                 "keyframe_index": anchor["keyframe_index"],
-                "shot_start_frame": anchor["shot_start_frame"],
-                "shot_end_frame": anchor["shot_end_frame"],
+                "shot_start_frame": anchor.get("shot_start_frame"),
+                "shot_end_frame": anchor.get("shot_end_frame"),
                 "score": avg_score, 
             })
             

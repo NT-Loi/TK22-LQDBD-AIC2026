@@ -3,6 +3,7 @@ from qdrant_client.models import Distance, VectorParams
 import logging
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 def setup_qdrant_collection(client: QdrantClient, collection_name: str, vector_sizes: dict, distance: Distance = Distance.COSINE, overwrite=False):
     """

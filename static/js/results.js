@@ -169,8 +169,8 @@ function displaySequenceResults(results) {
     const card = document.createElement("div");
     card.classList.add("shot-group-card"); // Tái sử dụng class này cho layout grid
     
-    // Grid Thumbnails (show all frames in sequence in order)
-    let displayFrames = seq.frames;
+    // Use display_frames (best frame per shot) for card thumbnails, fallback to frames
+    let displayFrames = seq.display_frames || seq.frames;
     const gridClass = `items-${displayFrames.length > 4 ? 4 : displayFrames.length}`;
     
     let gridHTML = `<div class="shot-thumbnails-grid ${gridClass}">`;
@@ -196,16 +196,16 @@ function displaySequenceResults(results) {
 
     card.innerHTML = gridHTML + infoHTML;
 
-    // Submit Handler for the anchor (the first frame)
+    // Submit Handler for the anchor (the first display frame)
     const submitBtn = card.querySelector(".card-submit-btn");
     if (submitBtn) {
-        submitBtn.addEventListener("click", (e) => handleSubmit(e, seq.frames[0]));
+        submitBtn.addEventListener("click", (e) => handleSubmit(e, displayFrames[0]));
     }
 
-    // Click to Open Modal (use the first frame as anchor)
+    // Click to Open Modal — pass ALL frames so modal shows full detail
     card.addEventListener("click", (e) => {
       if (e.target.tagName.toLowerCase() === 'button') return;
-      const anchor = seq.frames[0];
+      const anchor = displayFrames[0];
       const fps = parseFloat(anchor.fps) || 25;
       let startTime = anchor.keyframe_index / fps;
       startTime = Math.max(0, startTime - 0.5);

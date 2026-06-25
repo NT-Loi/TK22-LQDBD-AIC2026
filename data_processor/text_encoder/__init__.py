@@ -3,7 +3,7 @@ import sys
 
 # Configure logging to output to both console and a file called 'app.log'
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("system.log"),
@@ -11,6 +11,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 import torch
 import torch.nn as nn
@@ -92,3 +93,4 @@ if __name__ == "__main__":
     sample_text = "A person riding a horse on a beach."
     features = encoder(sample_text)
     print("Features:", features)
+    print(features.shape)

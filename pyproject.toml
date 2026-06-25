@@ -1,0 +1,16 @@
+[project]
+name = "tk22-lqdbd-aic2026"
+version = "0.1.0"
+description = "TK22-lQDBD's implementation of Video Retrieval System for AIC 2026"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.138.1",
+    "numpy>=2.5.0",
+    "open-clip-torch>=3.3.0",
+    "opencv-python>=4.13.0.92",
+    "qdrant-client>=1.18.0",
+    "sentencepiece>=0.2.1",
+    "torch>=2.12.1",
+    "transformers>=5.12.1",
+]

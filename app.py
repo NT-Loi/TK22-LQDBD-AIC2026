@@ -99,6 +99,9 @@ async def search(query: SearchQuery):
         if "frames" in item:
             for frame in item["frames"]:
                 frame["fps"] = fps
+        if "display_frames" in item:
+            for frame in item["display_frames"]:
+                frame["fps"] = fps
             
     return results
 
