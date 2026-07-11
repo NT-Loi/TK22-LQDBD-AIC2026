@@ -10,6 +10,7 @@ dependencies = [
     "open-clip-torch>=3.3.0",
     "opencv-python>=4.13.0.92",
     "qdrant-client>=1.18.0",
+    "redis>=5.0.0",
     "sentencepiece>=0.2.1",
     "torch>=2.12.1",
     "transformers>=5.12.1",

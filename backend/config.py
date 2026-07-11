@@ -16,3 +16,8 @@ EMBEDDING_WEIGHTS = {
     }
 
 MAX_FRAME_GAP = 2000
+
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_DB = 0
+CACHE_TTL = 3600  # 1 hour in seconds

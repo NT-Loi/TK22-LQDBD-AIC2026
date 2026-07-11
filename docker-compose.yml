@@ -7,3 +7,10 @@ services:
       - "6334:6334"
     volumes:
       - ./qdrant/storage:/qdrant/storage
+
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    restart: always

@@ -3,12 +3,15 @@ import json
 import bisect
 import torch
 import logging
+import numpy as np
+import redis
 from pathlib import Path
 from qdrant_client import QdrantClient
 
 from backend.data_processor.text_encoder import CLIPTextEncoder, SigLIPTextEncoder
 from backend.config import (DATA_DIR, QDRANT_HOST_URL, QDRANT_COLLECTION_NAME, 
-                            VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP)
+                            VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP,
+                            REDIS_HOST, REDIS_PORT, REDIS_DB, CACHE_TTL)
 from .ingestion import ingest_embeddings
 from .pathfinder import find_temporal_sequences
 
@@ -46,6 +49,39 @@ class RetrievalSystem:
         self.shots_data = {}
         self._load_shots()
 
+        # Initialize Redis client with graceful fallback
+        try:
+            self.redis_client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                db=REDIS_DB,
+                decode_responses=True
+            )
+            self.redis_client.ping()
+            self.redis_enabled = True
+            logger.info("Connected to Redis successfully. Caching is enabled.")
+        except Exception as e:
+            logger.warning(f"Could not connect to Redis: {e}. Running without cache.")
+            self.redis_client = None
+            self.redis_enabled = False
+
+    def _get_cache(self, key: str):
+        if not self.redis_enabled or not self.redis_client:
+            return None
+        try:
+            return self.redis_client.get(key)
+        except Exception as e:
+            logger.warning(f"Redis get failed for key {key}: {e}")
+            return None
+
+    def _set_cache(self, key: str, value: str, ttl: int = CACHE_TTL):
+        if not self.redis_enabled or not self.redis_client:
+            return
+        try:
+            self.redis_client.set(key, value, ex=ttl)
+        except Exception as e:
+            logger.warning(f"Redis set failed for key {key}: {e}")
+
     def _load_shots(self):
         shot_dir = self.data_dir / "shot"
         if not shot_dir.exists():
@@ -82,16 +118,43 @@ class RetrievalSystem:
             
         encoded_vectors = {}
         for model_name in model_names:
-            if model_name in self.text_encoders:
-                encoded_vectors[model_name] = self.text_encoders[model_name](query)
-            else:
+            if model_name not in self.text_encoders:
                 logger.warning(f"Text encoder for '{model_name}' is not initialized.")
+                continue
+                
+            cache_key = f"emb:{model_name}:{query}"
+            cached_val = self._get_cache(cache_key)
+            if cached_val is not None:
+                try:
+                    vector_list = json.loads(cached_val)
+                    encoded_vectors[model_name] = np.array(vector_list, dtype=np.float32)
+                    logger.debug(f"Cache hit for embedding: {model_name} -> '{query}'")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Error loading cached embedding: {e}")
+                    
+            # Cache miss, encode and cache the embedding
+            vector = self.text_encoders[model_name](query)
+            encoded_vectors[model_name] = vector
+            self._set_cache(cache_key, json.dumps(vector.tolist()))
                 
         return encoded_vectors
 
     def semantic_search(self, query: str, model_names: list = None, top_k: int = 1000, 
                         score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
         logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}.")
+        
+        # Check cache first
+        models_str = ",".join(sorted(model_names)) if model_names else "all"
+        cache_key = f"search:semantic:{query}:{models_str}:{top_k}:{score_threshold}:{int(group_by_shot)}:{limit}"
+        cached_res = self._get_cache(cache_key)
+        if cached_res is not None:
+            logger.info(f"Cache hit for semantic search: '{query}'")
+            try:
+                return json.loads(cached_res)
+            except Exception as e:
+                logger.warning(f"Failed to parse cached semantic search results: {e}")
+
         encoded_vectors = self.encode_query(query, model_names)
         
         normalized_results = {}
@@ -194,14 +257,29 @@ class RetrievalSystem:
                 })
                 
             grouped_results.sort(key=lambda x: x["score"], reverse=True)
-            return grouped_results[:limit]
+            final_res = grouped_results[:limit]
+        else:
+            final_res = results[:limit]
             
-        return results[:limit]
+        self._set_cache(cache_key, json.dumps(final_res))
+        return final_res
 
     def temporal_search(self, queries: list, model_names: list = None, group_by_shot: bool = False, 
                         score_threshold: float = 0.3, limit: int = 100):
         logger.info(f"Performing temporal search for {len(queries)} queries with group_by_shot={group_by_shot}")
         
+        # Check cache first
+        queries_str = "||".join(queries)
+        models_str = ",".join(sorted(model_names)) if model_names else "all"
+        cache_key = f"search:temporal:{queries_str}:{models_str}:{int(group_by_shot)}:{score_threshold}:{limit}"
+        cached_res = self._get_cache(cache_key)
+        if cached_res is not None:
+            logger.info(f"Cache hit for temporal search: {queries}")
+            try:
+                return json.loads(cached_res)
+            except Exception as e:
+                logger.warning(f"Failed to parse cached temporal search results: {e}")
+
         query_results = []
         for q in queries:
             res = self.semantic_search(
@@ -213,10 +291,12 @@ class RetrievalSystem:
             )
             query_results.append(res)
             
-        return find_temporal_sequences(
+        final_res = find_temporal_sequences(
             query_results, 
             queries, 
             group_by_shot=group_by_shot, 
             max_frame_gap=MAX_FRAME_GAP, 
             limit=limit
         )
+        self._set_cache(cache_key, json.dumps(final_res))
+        return final_res
