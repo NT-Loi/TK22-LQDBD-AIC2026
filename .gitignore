@@ -4,7 +4,7 @@ __pycache__
 
 query-p1-groupA
 data
+!data/README.md
 qdrant
 
 *.log
-.*

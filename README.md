@@ -33,24 +33,24 @@ data/
 ```
 
 ### 3. Run the Backend Server
-Install the required Python dependencies using `uv` (as the project configures dependencies in `pyproject.toml` and locks them in `uv.lock`), and start the server:
+Install the required Python dependencies using `uv` (as the project configures dependencies in `backend/pyproject.toml` and locks them in `backend/uv.lock`), and start the server:
 
 ```bash
 # Install dependencies and sync virtual environment
-uv sync
+uv sync --project backend
 
 # Start the web interface and API
-uv run uvicorn app:app --reload
+uv run --project backend uvicorn backend.app:app --reload
 ```
 
 Alternatively, if you do not have `uv` installed, you can use standard `pip` to install the dependencies defined in `pyproject.toml`:
 
 ```bash
 # Install package dependencies
-pip install .
+pip install ./backend
 
 # Start the web interface and API
-uvicorn app:app --reload
+python -m uvicorn backend.app:app --reload
 ```
 The application will be available at `http://localhost:8000`.
 

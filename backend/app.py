@@ -7,9 +7,9 @@ import uvicorn
 import os
 from contextlib import asynccontextmanager
 
-from retrieval_system import RetrievalSystem
-from utils.video_metadata import load_video_metadata
-from config import VECTOR_SIZES
+from backend.retrieval import RetrievalSystem
+from backend.utils.video_metadata import load_video_metadata
+from backend.config import VECTOR_SIZES
 
 system = None
 video_metadata = {}
@@ -31,11 +31,11 @@ os.makedirs("data/video", exist_ok=True)
 os.makedirs("data/keyframe", exist_ok=True)
 
 # Mount static and media directories
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 app.mount("/video", StaticFiles(directory="data/video"), name="video")
 app.mount("/keyframes", StaticFiles(directory="data/keyframe"), name="keyframes")
 
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory="frontend/templates")
 
 class SearchQuery(BaseModel):
     text_queries: List[str]
