@@ -74,6 +74,7 @@ async def search(query: SearchQuery):
         results = system.temporal_search(
             query.text_queries, 
             model_names=model_names, 
+            objects=query.objects,
             group_by_shot=query.group_by_shot, 
             score_threshold=query.score_threshold,
             limit=query.limit
@@ -83,6 +84,7 @@ async def search(query: SearchQuery):
         results = system.semantic_search(
             primary_query, 
             model_names=model_names, 
+            objects=query.objects,
             score_threshold=query.score_threshold,
             group_by_shot=query.group_by_shot,
             limit=query.limit
