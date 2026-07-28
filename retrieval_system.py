@@ -16,8 +16,9 @@ import os
 import torch
 import uuid
 from pathlib import Path
+from typing import List, Optional
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, Range, SetPayloadOperation, SetPayload
 # from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
@@ -93,6 +94,8 @@ class RetrievalSystem:
         def _ingest_embedding(embedding_model: str):
             model_embedding_dir = self.embedding_dir / f"{embedding_model}"
             if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
+                model_embedding_dir = self.embedding_dir
+            if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
                 logger.warning(f"Embedding directory {model_embedding_dir} not found. Skipping {embedding_model}.")
                 return
 
@@ -114,6 +117,8 @@ class RetrievalSystem:
                         logger.warning(f"Skipping file with unexpected name format: {file_name}")
                         continue
                         
+                    expected_dim = VECTOR_SIZES.get(embedding_model)
+
                     # Load torch tensor and convert to python list
                     try:
                         # Assuming the tensor can be squeezed to 1D array of embedding_dim
@@ -121,6 +126,9 @@ class RetrievalSystem:
                         embedding = embedding_tensor.squeeze().tolist()
                     except Exception as e:
                         logger.error(f"Failed to load {file_name} for video {video_id}: {e}")
+                        continue
+
+                    if len(embedding) != expected_dim:
                         continue
                     
                     # Deterministic UUID based on video_id and keyframe_idx
@@ -152,7 +160,77 @@ class RetrievalSystem:
             logger.info(f"Ingested embeddings for model '{embedding_model}' into Qdrant.")
 
         def _ingest_object_detection():
-            pass
+            obj_dir = self.data_dir / "object_detection"
+            if not obj_dir.exists():
+                logger.warning(f"Object detection directory {obj_dir} not found. Skipping.")
+                return
+
+            logger.info("Ingesting object detection metadata into Qdrant in batches...")
+            count = 0
+            operations = []
+
+            def _flush_operations():
+                nonlocal operations, count
+                if not operations:
+                    return
+                try:
+                    self.qdrant_client.batch_update_points(
+                        collection_name=self.qdrant_collection_name,
+                        update_operations=operations
+                    )
+                    count += len(operations)
+                    logger.info(f"Batched object payload update: {count} points processed so far...")
+                except Exception as e:
+                    logger.error(f"Failed batch update for object detection payloads: {e}")
+                operations = []
+
+            for root, _, files in os.walk(obj_dir):
+                for file_name in files:
+                    if not file_name.endswith(".json"):
+                        continue
+                    
+                    json_path = Path(root) / file_name
+                    try:
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception as e:
+                        logger.error(f"Failed to read JSON {json_path}: {e}")
+                        continue
+                        
+                    image_path = data.get("image_path", "")
+                    if image_path:
+                        parent_name = Path(image_path).parent.name
+                        video_id = parent_name if parent_name and parent_name != "." else data.get("video_id")
+                    else:
+                        video_id = json_path.parent.name if json_path.parent.name else data.get("video_id")
+
+                    keyframe_idx = data.get("keyframe_index")
+                    if not video_id or keyframe_idx is None:
+                        continue
+
+                    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
+
+                    payload = {
+                        "objects": data.get("object_names", []),
+                        "has_objects": data.get("has_objects", False),
+                        "num_detections": data.get("num_detections", 0),
+                        "class_counts": data.get("class_counts", {})
+                    }
+
+                    operations.append(
+                        SetPayloadOperation(
+                            set_payload=SetPayload(
+                                payload=payload,
+                                points=[point_id]
+                            )
+                        )
+                    )
+
+                    if len(operations) >= 500:
+                        _flush_operations()
+
+            _flush_operations()
+            logger.info(f"Completed object detection payload ingestion for {count} points.")
         
         def _ingest_ocr():
             pass
@@ -161,6 +239,44 @@ class RetrievalSystem:
             _ingest_embedding(model_name)
         _ingest_object_detection()
         _ingest_ocr()
+
+    def _build_qdrant_filter(self, objects: list) -> Optional[Filter]:
+        if not objects:
+            return None
+            
+        must_conditions = []
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            label = obj.get("label")
+            if not label:
+                continue
+                
+            must_conditions.append(
+                FieldCondition(
+                    key="objects",
+                    match=MatchValue(value=label)
+                )
+            )
+            
+            min_instances = obj.get("min_instances", 1)
+            max_instances = obj.get("max_instances")
+            
+            range_kwargs = {"gte": min_instances}
+            if max_instances is not None and isinstance(max_instances, int):
+                range_kwargs["lte"] = max_instances
+                
+            must_conditions.append(
+                FieldCondition(
+                    key=f"class_counts.{label}",
+                    range=Range(**range_kwargs)
+                )
+            )
+            
+        if not must_conditions:
+            return None
+            
+        return Filter(must=must_conditions)
 
     def encode_query(self, query: str, model_names: list = None):
         """
@@ -180,22 +296,47 @@ class RetrievalSystem:
                 
         return encoded_vectors
 
-    def semantic_search(self, query: str, model_names: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
+    def _matches_object_filters(self, payload: dict, objects: list) -> bool:
+        if not objects or not payload:
+            return True
+        
+        frame_objects = payload.get("objects", [])
+        class_counts = payload.get("class_counts", {})
+        
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            label = obj.get("label")
+            if not label:
+                continue
+                
+            if label not in frame_objects:
+                return False
+                
+            min_instances = obj.get("min_instances", 1)
+            max_instances = obj.get("max_instances")
+            actual_count = class_counts.get(label, 0)
+            
+            if actual_count < min_instances:
+                return False
+            if max_instances is not None and isinstance(max_instances, int) and actual_count > max_instances:
+                return False
+                
+        return True
+
+    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
         logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}.")
         
-        # Encode query
         encoded_vectors = self.encode_query(query, model_names)
         
-        #Search Qdrant
-        normalized_results = {} # dict mapping model_name -> dict(point_id -> normalized_score)
-        all_payloads = {}       # dict mapping point_id -> payload to recover video_id and keyframe_idx later
+        normalized_results = {}
+        all_payloads = {}
         
         for model_name, vector in encoded_vectors.items():
             if model_name not in EMBEDDING_WEIGHTS:
                 logger.warning(f"Skipping '{model_name}' search because it has no weight in EMBEDDING_WEIGHTS.")
                 continue
                 
-            # Extract 1D array since encode_query returns shape (1, dim)
             query_vector = vector[0].tolist()
             
             search_result = self.qdrant_client.query_points(
@@ -205,6 +346,9 @@ class RetrievalSystem:
                 limit=top_k,
                 with_payload=True
             ).points
+
+            if objects:
+                search_result = [hit for hit in search_result if self._matches_object_filters(hit.payload, objects)]
             
             if not search_result:
                 continue
@@ -299,14 +443,14 @@ class RetrievalSystem:
             
         return results[:limit]
 
-    def temporal_search(self, queries: list, model_names: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100):
+    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100):
         logger.info(f"Performing temporal search for {len(queries)} queries with group_by_shot={group_by_shot}")
         
         # 1. Search each query
         query_results = []
         for q in queries:
             # We get more than 1000 to ensure we have enough paths, or keep it 1000
-            res = self.semantic_search(q, model_names=model_names, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot)
+            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot)
             query_results.append(res)
             
         # 2. Group by video
