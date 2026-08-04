@@ -13,6 +13,7 @@ logging.basicConfig(
 )
 
 import os
+import time
 import torch
 import uuid
 from pathlib import Path
@@ -31,8 +32,13 @@ import bisect
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+INGEST_BATCH_SIZE = 256
+INGEST_PROGRESS_INTERVAL = 10000
+UPSERT_TIMEOUT_SECONDS = 180
+UPSERT_MAX_RETRIES = 5
+
 class RetrievalSystem:
-    def __init__(self, data_dir: str=DATA_DIR, device=None, re_ingest: bool=False):
+    def __init__(self, data_dir: str=DATA_DIR, device=None, re_ingest: bool=False, auto_ingest: bool=False):
         logger.info("Initializing Video Retrieval System...")
 
         # auto use gpu
@@ -43,15 +49,22 @@ class RetrievalSystem:
         self.data_dir = Path(data_dir)
         self.embedding_dir = self.data_dir / "embedding"
 
-        self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL)
+        self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL, timeout=UPSERT_TIMEOUT_SECONDS)
         self.qdrant_collection_name = QDRANT_COLLECTION_NAME
-        if not self.qdrant_client.collection_exists(self.qdrant_collection_name):
-            logger.warning(f"Qdrant collection '{self.qdrant_collection_name}' does not exist. Please run ingestion.")
 
         # self.es_client = Elasticsearch(ES_HOST_URL, request_timeout=30)
 
+        needs_ingest = self._needs_ingest()
         if re_ingest:
             self.ingest()
+        elif auto_ingest and needs_ingest:
+            logger.info("Qdrant collection is missing or empty. Running ingestion...")
+            self.ingest()
+        elif needs_ingest:
+            logger.warning(
+                "Qdrant collection is missing or empty. Start the app with --ingest "
+                "to load embeddings before searching."
+            )
 
         self.text_encoders = {}
         logger.info("Initializing text encoders...")
@@ -65,6 +78,20 @@ class RetrievalSystem:
         # Load shot boundaries
         self.shots_data = {}
         self._load_shots()
+
+    def _needs_ingest(self) -> bool:
+        if not self.qdrant_client.collection_exists(self.qdrant_collection_name):
+            return True
+
+        try:
+            count_result = self.qdrant_client.count(
+                collection_name=self.qdrant_collection_name,
+                exact=True,
+            )
+            return count_result.count == 0
+        except Exception as e:
+            logger.warning(f"Could not check Qdrant collection count: {e}")
+            return False
 
     def _load_shots(self):
         shot_dir = self.data_dir / "shot"
@@ -100,6 +127,36 @@ class RetrievalSystem:
                 return
 
             points = []
+            ingested_count = 0
+
+            def _upsert_points(batch: List[PointStruct]):
+                nonlocal ingested_count
+                if not batch:
+                    return
+
+                for attempt in range(1, UPSERT_MAX_RETRIES + 1):
+                    try:
+                        self.qdrant_client.upsert(
+                            collection_name=self.qdrant_collection_name,
+                            points=batch,
+                            wait=True,
+                            timeout=UPSERT_TIMEOUT_SECONDS,
+                        )
+                        ingested_count += len(batch)
+                        if ingested_count % INGEST_PROGRESS_INTERVAL < len(batch):
+                            logger.info(f"{embedding_model}: ingested {ingested_count:,} points...")
+                        return
+                    except Exception as e:
+                        if attempt == UPSERT_MAX_RETRIES:
+                            raise
+
+                        sleep_seconds = min(2 ** attempt, 30)
+                        logger.warning(
+                            f"{embedding_model}: upsert batch failed on attempt "
+                            f"{attempt}/{UPSERT_MAX_RETRIES}: {e}. Retrying in {sleep_seconds}s..."
+                        )
+                        time.sleep(sleep_seconds)
+
             # Directory structure: embedding_dir / model_name / video_id / keyframe_<idx>.pt
             for video_id in os.listdir(model_embedding_dir):
                 video_dir = model_embedding_dir / video_id
@@ -143,21 +200,13 @@ class RetrievalSystem:
                         }
                     ))
                     
-                    # Batch upsert every 1000 points
-                    if len(points) >= 1000:
-                        self.qdrant_client.upsert(
-                            collection_name=self.qdrant_collection_name,
-                            points=points
-                        )
+                    if len(points) >= INGEST_BATCH_SIZE:
+                        _upsert_points(points)
                         points = []
             
             # Upsert any remaining points
-            if points:
-                self.qdrant_client.upsert(
-                    collection_name=self.qdrant_collection_name,
-                    points=points
-                )
-            logger.info(f"Ingested embeddings for model '{embedding_model}' into Qdrant.")
+            _upsert_points(points)
+            logger.info(f"Ingested {ingested_count:,} embeddings for model '{embedding_model}' into Qdrant.")
 
         def _ingest_object_detection():
             obj_dir = self.data_dir / "object_detection"

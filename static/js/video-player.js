@@ -43,6 +43,7 @@ export function openModal(
   shotData = null,
   specificKeyframe = null,
   sequenceData = null,
+  videoUrl = null,
 ) {
   closeModal();
   currentOpenVideoId = videoId;
@@ -52,7 +53,7 @@ export function openModal(
   elements.modalOverlay.classList.remove("hidden");
 
   // --- 1. SETUP PLAYER ---
-  const videoUrl = `/video/${videoId}.mp4`;
+  videoUrl = videoUrl || `/video/${videoId}.mp4`;
   let mainHls = null;
   elements.modalVideoPlayer.src = videoUrl;
   elements.modalVideoPlayer.addEventListener(

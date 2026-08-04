@@ -1,0 +1,7 @@
+K_VALUES = (1, 5, 20, 50, 100)
+
+TASK_KIS = "kis"
+TASK_QA = "qa"
+TASK_TRAKE = "trake"
+
+SUPPORTED_TASKS = {TASK_KIS, TASK_QA, TASK_TRAKE}

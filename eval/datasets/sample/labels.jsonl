@@ -1,0 +1,3 @@
+{"query_id":"kis_001","task":"kis","query":"Find the shot where a person opens a laptop.","video_id":"L01_V001","frame_ranges":[[500,510]]}
+{"query_id":"qa_001","task":"qa","query":"Find the party scene and answer: what color is the glass held by the woman in a red dress?","video_id":"L05_V005","frame_ranges":[[800,900]],"answers":["blue","màu xanh","xanh"]}
+{"query_id":"trake_001","task":"trake","query":"Find the four key moments in a high-jump attempt: take-off, clearance, landing, standing up.","video_id":"L10_V010","events":[{"name":"take-off","frame_ranges":[[95,105]]},{"name":"clearance","frame_ranges":[[145,155]]},{"name":"landing","frame_ranges":[[195,205]]},{"name":"standing up","frame_ranges":[[245,255]]}]}

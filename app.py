@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import List, Optional
+import argparse
 import uvicorn
 import os
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
 from config import VECTOR_SIZES
 
+INGEST_ON_START_ENV = "AIC_INGEST_ON_START"
 system = None
 video_metadata = {}
 
@@ -18,7 +20,8 @@ video_metadata = {}
 async def lifespan(app: FastAPI):
     global system, video_metadata
     # Initialize the retrieval system when the app starts
-    system = RetrievalSystem(re_ingest=False)
+    ingest_on_start = os.getenv(INGEST_ON_START_ENV, "").lower() in {"1", "true", "yes"}
+    system = RetrievalSystem(re_ingest=ingest_on_start)
     video_metadata = load_video_metadata()
     yield
     system = None
@@ -94,16 +97,21 @@ async def search(query: SearchQuery):
     for item in results:
         vid = item.get("video_id")
         fps = 25.0
+        video_url = f"/video/{vid}.mp4" if vid else None
         if vid and vid in video_metadata and "fps" in video_metadata[vid]:
             fps = video_metadata[vid]["fps"]
+            video_url = video_metadata[vid].get("url", video_url)
             
         item["fps"] = fps
+        item["video_url"] = video_url
         if "frames" in item:
             for frame in item["frames"]:
                 frame["fps"] = fps
+                frame["video_url"] = video_url
         if "display_frames" in item:
             for frame in item["display_frames"]:
                 frame["fps"] = fps
+                frame["video_url"] = video_url
             
     return results
 
@@ -129,4 +137,23 @@ async def submit(data: SubmitData):
     return {"status": "success"}
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    parser = argparse.ArgumentParser(description="Run the AIC video retrieval app.")
+    parser.add_argument(
+        "--ingest",
+        action="store_true",
+        help="Rebuild the Qdrant collection from embeddings before serving.",
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind.")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind.")
+    parser.add_argument(
+        "--reload",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable uvicorn reload.",
+    )
+    args = parser.parse_args()
+
+    if args.ingest:
+        os.environ[INGEST_ON_START_ENV] = "1"
+
+    uvicorn.run("app:app", host=args.host, port=args.port, reload=args.reload)

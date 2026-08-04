@@ -102,6 +102,7 @@ function displayFlatResults(results) {
         null,
         item.keyframe_index,
         item.temporal_sequence,
+        item.video_url,
       );
     });
 
@@ -140,7 +141,7 @@ function setupHoverPreview(element, videoEl, item) {
       const videoId = item.video_id;
       const fps = item.fps || 25;
       const startTime = Math.max(0, item.keyframe_index / fps - 1.0); // Preview trước 1s
-      const videoUrl = `/video/${videoId}.mp4`;
+      const videoUrl = item.video_url || `/video/${videoId}.mp4`;
 
       // Lắng nghe sự kiện timeupdate hoặc playing để hiện video
       // timeupdate > 0 nghĩa là frame đã chạy, đảm bảo không bị màn hình đen
@@ -210,7 +211,7 @@ function displaySequenceResults(results) {
       let startTime = anchor.keyframe_index / fps;
       startTime = Math.max(0, startTime - 0.5);
 
-      openModal(anchor.video_id, startTime, fps, null, anchor.keyframe_index, seq.frames);
+      openModal(anchor.video_id, startTime, fps, null, anchor.keyframe_index, seq.frames, anchor.video_url || seq.video_url);
     });
 
     elements.resultsContainer.appendChild(card);

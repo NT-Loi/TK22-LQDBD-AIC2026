@@ -1,0 +1,63 @@
+{
+  "base_url": "http://localhost:8000",
+  "models": [
+    "SigLIP"
+  ],
+  "query_count": 9,
+  "runs_per_query": 5,
+  "warmup_runs_per_query": 1,
+  "overall": {
+    "runs": 45,
+    "success_count": 45,
+    "error_count": 0,
+    "mean_ms": 2524.005,
+    "min_ms": 2225.518,
+    "p50_ms": 2297.0,
+    "p90_ms": 3047.514,
+    "p95_ms": 3069.054,
+    "p99_ms": 3161.83,
+    "max_ms": 3199.714,
+    "mean_result_count": 36.667
+  },
+  "by_task": {
+    "kis": {
+      "runs": 15,
+      "success_count": 15,
+      "error_count": 0,
+      "mean_ms": 2280.803,
+      "min_ms": 2225.518,
+      "p50_ms": 2264.569,
+      "p90_ms": 2306.7,
+      "p95_ms": 2346.844,
+      "p99_ms": 2421.514,
+      "max_ms": 2440.182,
+      "mean_result_count": 42
+    },
+    "qa": {
+      "runs": 15,
+      "success_count": 15,
+      "error_count": 0,
+      "mean_ms": 2283.994,
+      "min_ms": 2247.703,
+      "p50_ms": 2279.577,
+      "p90_ms": 2309.192,
+      "p95_ms": 2317.474,
+      "p99_ms": 2330.141,
+      "max_ms": 2333.308,
+      "mean_result_count": 34.667
+    },
+    "trake": {
+      "runs": 15,
+      "success_count": 15,
+      "error_count": 0,
+      "mean_ms": 3007.217,
+      "min_ms": 2849.663,
+      "p50_ms": 3009.151,
+      "p90_ms": 3096.281,
+      "p95_ms": 3139.445,
+      "p99_ms": 3187.66,
+      "max_ms": 3199.714,
+      "mean_result_count": 33.333
+    }
+  }
+}
