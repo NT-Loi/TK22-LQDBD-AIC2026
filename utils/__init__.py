@@ -1,1 +1,1 @@
-from .qdrant import setup_qdrant_collection
+from .qdrant import setup_qdrant_collection, setup_text_indexes

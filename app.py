@@ -11,6 +11,9 @@ from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
 from config import VECTOR_SIZES
 
+from fastapi.responses import FileResponse, Response
+from pathlib import Path
+
 system = None
 video_metadata = {}
 
@@ -26,14 +29,39 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Ensure media directories exist to prevent StaticFiles from crashing
+# Ensure media directories exist
 os.makedirs("data/video", exist_ok=True)
 os.makedirs("data/keyframe", exist_ok=True)
 
-# Mount static and media directories
+from fastapi.responses import FileResponse, Response
+from pathlib import Path
+
+# Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/video", StaticFiles(directory="data/video"), name="video")
-app.mount("/keyframes", StaticFiles(directory="data/keyframe"), name="keyframes")
+
+@app.get("/keyframes/{path:path}")
+async def get_keyframe(path: str):
+    file_path = Path("data/keyframe") / path
+    if file_path.is_file():
+        return FileResponse(file_path)
+
+    matches = list(Path("data/keyframe").glob(f"**/{path}"))
+    if matches:
+        return FileResponse(matches[0])
+
+    return FileResponse("static/placeholder.png")
+
+@app.get("/video/{path:path}")
+async def get_video(path: str):
+    file_path = Path("data/video") / path
+    if file_path.is_file():
+        return FileResponse(file_path)
+
+    matches = list(Path("data/video").glob(f"**/{path}"))
+    if matches:
+        return FileResponse(matches[0])
+
+    return Response(status_code=404)
 
 templates = Jinja2Templates(directory="templates")
 
@@ -69,12 +97,16 @@ async def search(query: SearchQuery):
     if query.models and "all" not in query.models:
         model_names = query.models
     
+    # Use audio field as text query for whisper/ocr text filter
+    text_query = query.audio.strip() if query.audio else None
+
     if len(query.text_queries) > 1:
         # Perform temporal search
         results = system.temporal_search(
             query.text_queries, 
             model_names=model_names, 
             objects=query.objects,
+            text_query=text_query,
             group_by_shot=query.group_by_shot, 
             score_threshold=query.score_threshold,
             limit=query.limit
@@ -85,6 +117,7 @@ async def search(query: SearchQuery):
             primary_query, 
             model_names=model_names, 
             objects=query.objects,
+            text_query=text_query,
             score_threshold=query.score_threshold,
             group_by_shot=query.group_by_shot,
             limit=query.limit

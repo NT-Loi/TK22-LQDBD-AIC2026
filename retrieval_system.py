@@ -24,8 +24,9 @@ from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 from data_processor.text_encoder import *
 
 from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, QDRANT_COLLECTION_NAME, VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP
-from utils import setup_qdrant_collection
+from utils import setup_qdrant_collection, setup_text_indexes
 import json
+import csv
 import bisect
 
 logger = logging.getLogger(__name__)
@@ -88,76 +89,151 @@ class RetrievalSystem:
     def process_video_data(self):
         pass
 
+    def _load_maps(self):
+        """Load map CSVs: maps_lookup[video_id][frame_id] = pts_time (seconds)."""
+        maps_lookup = {}
+        maps_dir = self.data_dir / "maps"
+        if not maps_dir.exists():
+            logger.warning(f"Maps directory {maps_dir} does not exist.")
+            return maps_lookup
+
+        for group_dir in maps_dir.iterdir():
+            if not group_dir.is_dir():
+                continue
+            for csv_file in group_dir.glob("*_map.csv"):
+                vid = csv_file.name.replace("_map.csv", "")
+                frame_map = {}
+                try:
+                    with open(csv_file, "r", encoding="utf-8") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            frame_map[int(row["FrameID"])] = float(row["Seconds"])
+                    maps_lookup[vid] = frame_map
+                except Exception as e:
+                    logger.error(f"Error loading map CSV {csv_file}: {e}")
+        logger.info(f"Loaded maps for {len(maps_lookup)} videos.")
+        return maps_lookup
+
+    def _load_whisper(self):
+        """Load Whisper JSONs: whisper_lookup[video_id] = sorted list of segments."""
+        whisper_lookup = {}
+        w_dir = self.data_dir / "whisper"
+        if not w_dir.exists():
+            logger.warning(f"Whisper directory {w_dir} does not exist.")
+            return whisper_lookup
+
+        for group_dir in w_dir.iterdir():
+            if not group_dir.is_dir():
+                continue
+            for json_file in group_dir.glob("*.json"):
+                vid = json_file.stem
+                try:
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        w_data = json.load(f)
+                    whisper_lookup[vid] = sorted(
+                        w_data.get("segments", []), key=lambda s: s["start"]
+                    )
+                except Exception as e:
+                    logger.error(f"Error loading whisper JSON {json_file}: {e}")
+        logger.info(f"Loaded whisper transcripts for {len(whisper_lookup)} videos.")
+        return whisper_lookup
+
+    @staticmethod
+    def _find_whisper_segment(segments, pts_time):
+        """Check if pts_time falls within any whisper segment [start, end].
+        Returns (text, segment_id) if found, (None, None) otherwise."""
+        if not segments or pts_time is None:
+            return None, None
+        for seg in segments:
+            if seg["start"] <= pts_time <= seg["end"]:
+                return seg.get("text"), seg.get("segment_id")
+        return None, None
+
     def ingest(self):
         setup_qdrant_collection(self.qdrant_client, self.qdrant_collection_name, VECTOR_SIZES, overwrite=True)
 
-        def _ingest_embedding(embedding_model: str):
-            model_embedding_dir = self.embedding_dir / f"{embedding_model}"
-            if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
-                model_embedding_dir = self.embedding_dir
-            if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
-                logger.warning(f"Embedding directory {model_embedding_dir} not found. Skipping {embedding_model}.")
+        maps_lookup = self._load_maps()
+        whisper_lookup = self._load_whisper()
+
+        # Single optimized pass over embedding files to create vectors AND base payload (maps + whisper)
+        def _ingest_embeddings():
+            if not self.embedding_dir.exists():
+                logger.warning(f"Embedding directory {self.embedding_dir} not found.")
                 return
 
+            logger.info("Scanning and ingesting embeddings with maps & whisper payloads...")
             points = []
-            # Directory structure: embedding_dir / model_name / video_id / keyframe_<idx>.pt
-            for video_id in os.listdir(model_embedding_dir):
-                video_dir = model_embedding_dir / video_id
-                if not video_dir.is_dir():
-                    continue
-                    
-                for file_name in os.listdir(video_dir):
+            count = 0
+            matched_whisper = 0
+
+            # Map vector dimension to model name
+            dim_to_model = {size: name for name, size in VECTOR_SIZES.items()}
+
+            for root, _, files in os.walk(self.embedding_dir):
+                for file_name in files:
                     if not file_name.endswith(".pt") or not file_name.startswith("keyframe_"):
                         continue
-                    
-                    # Extract keyframe_idx from "keyframe_<idx>.pt"
+
                     try:
                         keyframe_idx = int(file_name.split("_")[1].split(".")[0])
                     except (IndexError, ValueError):
-                        logger.warning(f"Skipping file with unexpected name format: {file_name}")
                         continue
-                        
-                    expected_dim = VECTOR_SIZES.get(embedding_model)
 
-                    # Load torch tensor and convert to python list
+                    file_path = Path(root) / file_name
+                    video_id = file_path.parent.name
+                    group_name = file_path.parent.parent.name if file_path.parent.parent != self.embedding_dir else None
+
+                    # Single torch load per file
                     try:
-                        # Assuming the tensor can be squeezed to 1D array of embedding_dim
-                        embedding_tensor = torch.load(video_dir / file_name, map_location="cpu", weights_only=True)
+                        embedding_tensor = torch.load(file_path, map_location="cpu", weights_only=True)
                         embedding = embedding_tensor.squeeze().tolist()
                     except Exception as e:
-                        logger.error(f"Failed to load {file_name} for video {video_id}: {e}")
+                        logger.error(f"Failed to load {file_path}: {e}")
                         continue
 
-                    if len(embedding) != expected_dim:
+                    emb_len = len(embedding)
+                    model_name = dim_to_model.get(emb_len)
+                    if not model_name:
                         continue
-                    
-                    # Deterministic UUID based on video_id and keyframe_idx
+
+                    # Lookup pts_time and whisper text in the SAME pass
+                    pts_time = maps_lookup.get(video_id, {}).get(keyframe_idx)
+                    w_text, w_seg_id = self._find_whisper_segment(whisper_lookup.get(video_id), pts_time)
+                    if w_text is not None:
+                        matched_whisper += 1
+
                     point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
-                    
+
+                    payload = {
+                        "video_id": video_id,
+                        "keyframe_idx": keyframe_idx,
+                        "group": group_name,
+                        "pts_time": pts_time,
+                        "whisper_text": w_text,
+                        "whisper_segment_id": w_seg_id,
+                    }
+
                     points.append(PointStruct(
                         id=point_id,
-                        vector={embedding_model: embedding}, # Named vector
-                        payload={
-                            "video_id": video_id,
-                            "keyframe_idx": keyframe_idx
-                        }
+                        vector={model_name: embedding},
+                        payload=payload
                     ))
-                    
-                    # Batch upsert every 1000 points
+
+                    count += 1
                     if len(points) >= 1000:
                         self.qdrant_client.upsert(
                             collection_name=self.qdrant_collection_name,
                             points=points
                         )
+                        logger.info(f"Ingested {count} points so far...")
                         points = []
-            
-            # Upsert any remaining points
+
             if points:
                 self.qdrant_client.upsert(
                     collection_name=self.qdrant_collection_name,
                     points=points
                 )
-            logger.info(f"Ingested embeddings for model '{embedding_model}' into Qdrant.")
+            logger.info(f"Completed base ingestion: {count} points, {matched_whisper} matched speech segments.")
 
         def _ingest_object_detection():
             obj_dir = self.data_dir / "object_detection"
@@ -231,14 +307,12 @@ class RetrievalSystem:
 
             _flush_operations()
             logger.info(f"Completed object detection payload ingestion for {count} points.")
-        
-        def _ingest_ocr():
-            pass
-        
-        for model_name in VECTOR_SIZES.keys():    
-            _ingest_embedding(model_name)
+
+        _ingest_embeddings()
         _ingest_object_detection()
-        _ingest_ocr()
+
+        # Create text indexes for keyword search on text payload fields
+        setup_text_indexes(self.qdrant_client, self.qdrant_collection_name)
 
     def _build_qdrant_filter(self, objects: list) -> Optional[Filter]:
         if not objects:
@@ -324,7 +398,30 @@ class RetrievalSystem:
                 
         return True
 
-    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
+    @staticmethod
+    def _matches_text_filter(payload: dict, text_query: str) -> bool:
+        """Post-filter: check if whisper_text (or ocr_text) contains the query keywords.
+        Follows the same pattern as _matches_object_filters."""
+        if not text_query or not payload:
+            return True
+
+        query_lower = text_query.lower().strip()
+        if not query_lower:
+            return True
+
+        # Check whisper_text
+        whisper_text = payload.get("whisper_text")
+        if whisper_text and query_lower in whisper_text.lower():
+            return True
+
+        # Check ocr_text (for future use)
+        ocr_text = payload.get("ocr_text")
+        if ocr_text and query_lower in ocr_text.lower():
+            return True
+
+        return False
+
+    def semantic_search(self, query: str, model_names: list = None, objects: list = None, text_query: str = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
         logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}.")
         
         encoded_vectors = self.encode_query(query, model_names)
@@ -349,6 +446,9 @@ class RetrievalSystem:
 
             if objects:
                 search_result = [hit for hit in search_result if self._matches_object_filters(hit.payload, objects)]
+
+            if text_query:
+                search_result = [hit for hit in search_result if self._matches_text_filter(hit.payload, text_query)]
             
             if not search_result:
                 continue
@@ -412,7 +512,10 @@ class RetrievalSystem:
                 "keyframe_index": keyframe_idx,
                 "score": total_score,
                 "shot_start_frame": shot_start,
-                "shot_end_frame": shot_end
+                "shot_end_frame": shot_end,
+                "pts_time": payload.get("pts_time"),
+                "whisper_text": payload.get("whisper_text"),
+                "objects": payload.get("objects", []),
             })
             
         if group_by_shot:
@@ -443,14 +546,14 @@ class RetrievalSystem:
             
         return results[:limit]
 
-    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100):
+    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, text_query: str = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100):
         logger.info(f"Performing temporal search for {len(queries)} queries with group_by_shot={group_by_shot}")
         
         # 1. Search each query
         query_results = []
         for q in queries:
             # We get more than 1000 to ensure we have enough paths, or keep it 1000
-            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot)
+            res = self.semantic_search(q, model_names=model_names, objects=objects, text_query=text_query, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot)
             query_results.append(res)
             
         # 2. Group by video

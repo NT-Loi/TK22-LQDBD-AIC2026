@@ -122,7 +122,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       anchor_index: anchorIndex, // Index của câu query dùng để sort (trong list textQueries)
       models: selectedModels,
       objects: getObjectQueries(),
-      audio: "", 
+      audio: document.getElementById("text-filter-input")?.value?.trim() || "", 
       group_by_shot: isGroupShots,
       score_threshold: parseFloat(document.getElementById("score-threshold")?.value) || 0.3,
       limit: parseInt(document.getElementById("result-limit")?.value) || 100
