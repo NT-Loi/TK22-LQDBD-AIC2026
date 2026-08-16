@@ -119,10 +119,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const queryData = {
       text_queries: textQueries, // List of strings
-      anchor_index: anchorIndex, // Index của câu query dùng để sort (trong list textQueries)
+      anchor_index: anchorIndex, // Index of query used for sorting
       models: selectedModels,
       objects: getObjectQueries(),
-      audio: "", 
+      audio: document.getElementById("audio-query-input")?.value.trim() || "",
+      ocr_query: document.getElementById("ocr-query-input")?.value.trim() || "",
       group_by_shot: isGroupShots,
       score_threshold: parseFloat(document.getElementById("score-threshold")?.value) || 0.3,
       limit: parseInt(document.getElementById("result-limit")?.value) || 100
@@ -130,15 +131,22 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (
       queryData.text_queries.length === 0 &&
-      queryData.objects.length === 0
+      queryData.objects.length === 0 &&
+      !queryData.ocr_query &&
+      !queryData.audio
     ) {
-      alert("Please enter at least one description or object filter.");
+      alert("Please enter at least one text query, OCR filter, Audio filter, or Object filter.");
       return;
     }
 
     elements.resultsContainer.innerHTML = "<p>Searching sequence...</p>";
     const results = await searchAPI(queryData);
     currentResults = results;
+
+    const countEl = document.getElementById("results-count");
+    if (countEl) {
+      countEl.textContent = `Results: ${currentResults.length}`;
+    }
 
     displayResults(currentResults, isGroupShots);
   });
@@ -148,7 +156,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (scrollTopBtn) {
     scrollTopBtn.addEventListener("click", (e) => {
       e.preventDefault();
-      window.scrollTo({ top: 0, behavior: "instant" });
+      const resultsArea = document.querySelector(".results-area");
+      if (resultsArea) resultsArea.scrollTo({ top: 0, behavior: "instant" });
       scrollTopBtn.blur();
     });
   }

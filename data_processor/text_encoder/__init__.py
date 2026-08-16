@@ -78,6 +78,35 @@ class SigLIPTextEncoder(TextEncoder):
         logger.info("SigLIPTextEncoder initialized successfully.")
 
     def forward(self, query: str):
+        inputs = self.processor(text=[query], padding="max_length", max_length=64, truncation=True, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            out = self.model.get_text_features(**inputs)
+            text_features = out.pooler_output if hasattr(out, "pooler_output") else out
+
+        if self.device == "cuda":
+            text_features = text_features.cpu()
+            
+        return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32) 
+
+class SigLIP2TextEncoder(TextEncoder):
+    def __init__(self, device: str = None):
+        super().__init__(device)
+
+        model_id = "google/siglip2-giant-opt-patch16-384"
+        logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
+        from transformers import AutoProcessor, SiglipModel
+        self.model = SiglipModel.from_pretrained(model_id)
+
+        del self.model.vision_model
+
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        print(self.processor.tokenizer)
+        print(type(self.processor.tokenizer))
+        logger.info("SigLIP2TextEncoder initialized successfully.")
+
+    def forward(self, query: str):
         inputs = self.processor(text=[query], padding="max_length", truncation=True, return_tensors="pt").to(self.device)
         with torch.no_grad():
             out = self.model.get_text_features(**inputs)
@@ -88,8 +117,9 @@ class SigLIPTextEncoder(TextEncoder):
             
         return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32) 
 
+
 if __name__ == "__main__":
-    encoder = SigLIPTextEncoder()
+    encoder = SigLIP2TextEncoder()
     sample_text = "A person riding a horse on a beach."
     features = encoder(sample_text)
     print("Features:", features)

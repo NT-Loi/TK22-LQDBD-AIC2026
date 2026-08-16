@@ -15,16 +15,19 @@ logging.basicConfig(
 import os
 import torch
 import uuid
+from tqdm import tqdm
 from pathlib import Path
 from typing import List, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, Range, SetPayloadOperation, SetPayload
-# from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
 
-from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, QDRANT_COLLECTION_NAME, VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP
-from utils import setup_qdrant_collection
+from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, ES_INDEX_NAME, ES_TRANSCRIPT_INDEX_NAME, QDRANT_COLLECTION_NAME, VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP, OCR_SOURCES
+from utils import (setup_qdrant_collection, setup_es_index, ingest_ocr_to_es, fuzzy_search_ocr,
+                   setup_transcript_index, ingest_transcript_to_es, fuzzy_search_transcript)
+from utils.video_metadata import load_video_metadata
 import json
 import bisect
 
@@ -43,12 +46,17 @@ class RetrievalSystem:
         self.data_dir = Path(data_dir)
         self.embedding_dir = self.data_dir / "embedding"
 
-        self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL)
+        self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL, timeout=60.0)
         self.qdrant_collection_name = QDRANT_COLLECTION_NAME
         if not self.qdrant_client.collection_exists(self.qdrant_collection_name):
             logger.warning(f"Qdrant collection '{self.qdrant_collection_name}' does not exist. Please run ingestion.")
 
-        # self.es_client = Elasticsearch(ES_HOST_URL, request_timeout=30)
+        self.es_client = Elasticsearch(ES_HOST_URL, request_timeout=30)
+        self.es_index_name = ES_INDEX_NAME
+        self.es_transcript_index_name = ES_TRANSCRIPT_INDEX_NAME
+
+        # Load video metadata (FPS) for frame-to-time conversion
+        self.video_metadata = load_video_metadata()
 
         if re_ingest:
             self.ingest()
@@ -62,6 +70,8 @@ class RetrievalSystem:
             if model_name == "SigLIP":
                 self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
 
+            if model_name == "SigLIP2":
+                self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
         # Load shot boundaries
         self.shots_data = {}
         self._load_shots()
@@ -88,157 +98,172 @@ class RetrievalSystem:
     def process_video_data(self):
         pass
 
-    def ingest(self):
-        setup_qdrant_collection(self.qdrant_client, self.qdrant_collection_name, VECTOR_SIZES, overwrite=True)
+    def ingest_embedding(self, embedding_model: str):
+        model_embedding_dir = self.embedding_dir / f"{embedding_model}"
+        if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
+            model_embedding_dir = self.embedding_dir
+        if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
+            logger.warning(f"Embedding directory {model_embedding_dir} not found. Skipping {embedding_model}.")
+            return
 
-        def _ingest_embedding(embedding_model: str):
-            model_embedding_dir = self.embedding_dir / f"{embedding_model}"
-            if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
-                model_embedding_dir = self.embedding_dir
-            if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
-                logger.warning(f"Embedding directory {model_embedding_dir} not found. Skipping {embedding_model}.")
-                return
-
-            points = []
-            # Directory structure: embedding_dir / model_name / video_id / keyframe_<idx>.pt
-            for video_id in os.listdir(model_embedding_dir):
-                video_dir = model_embedding_dir / video_id
-                if not video_dir.is_dir():
+        points = []
+        total_ingested = 0
+        # Directory structure: embedding_dir / model_name / video_id / keyframe_<idx>.pt
+        video_dirs = [d for d in model_embedding_dir.iterdir() if d.is_dir()]
+        for video_dir in tqdm(video_dirs, desc=f"📦 Embeddings [{embedding_model}]", unit="video"):
+            video_id = video_dir.name
+                
+            for file_name in os.listdir(video_dir):
+                if not file_name.endswith(".pt") or not file_name.startswith("keyframe_"):
+                    continue
+                
+                # Extract keyframe_idx from "keyframe_<idx>.pt"
+                try:
+                    keyframe_idx = int(file_name.split("_")[1].split(".")[0])
+                except (IndexError, ValueError):
+                    logger.warning(f"Skipping file with unexpected name format: {file_name}")
                     continue
                     
-                for file_name in os.listdir(video_dir):
-                    if not file_name.endswith(".pt") or not file_name.startswith("keyframe_"):
-                        continue
-                    
-                    # Extract keyframe_idx from "keyframe_<idx>.pt"
-                    try:
-                        keyframe_idx = int(file_name.split("_")[1].split(".")[0])
-                    except (IndexError, ValueError):
-                        logger.warning(f"Skipping file with unexpected name format: {file_name}")
-                        continue
-                        
-                    expected_dim = VECTOR_SIZES.get(embedding_model)
+                expected_dim = VECTOR_SIZES.get(embedding_model)
 
-                    # Load torch tensor and convert to python list
-                    try:
-                        # Assuming the tensor can be squeezed to 1D array of embedding_dim
-                        embedding_tensor = torch.load(video_dir / file_name, map_location="cpu", weights_only=True)
-                        embedding = embedding_tensor.squeeze().tolist()
-                    except Exception as e:
-                        logger.error(f"Failed to load {file_name} for video {video_id}: {e}")
-                        continue
+                # Load torch tensor and convert to python list
+                try:
+                    embedding_tensor = torch.load(video_dir / file_name, map_location="cpu", weights_only=True)
+                    embedding = embedding_tensor.squeeze().tolist()
+                except Exception as e:
+                    logger.error(f"Failed to load {file_name} for video {video_id}: {e}")
+                    continue
 
-                    if len(embedding) != expected_dim:
-                        continue
-                    
-                    # Deterministic UUID based on video_id and keyframe_idx
-                    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
-                    
-                    points.append(PointStruct(
-                        id=point_id,
-                        vector={embedding_model: embedding}, # Named vector
-                        payload={
-                            "video_id": video_id,
-                            "keyframe_idx": keyframe_idx
-                        }
-                    ))
-                    
-                    # Batch upsert every 1000 points
-                    if len(points) >= 1000:
-                        self.qdrant_client.upsert(
-                            collection_name=self.qdrant_collection_name,
-                            points=points
-                        )
-                        points = []
-            
-            # Upsert any remaining points
-            if points:
-                self.qdrant_client.upsert(
-                    collection_name=self.qdrant_collection_name,
-                    points=points
-                )
-            logger.info(f"Ingested embeddings for model '{embedding_model}' into Qdrant.")
+                if len(embedding) != expected_dim:
+                    continue
+                
+                # Deterministic UUID based on video_id and keyframe_idx
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
+                
+                points.append(PointStruct(
+                    id=point_id,
+                    vector={embedding_model: embedding}, # Named vector
+                    payload={
+                        "video_id": video_id,
+                        "keyframe_idx": keyframe_idx
+                    }
+                ))
+                
+                # Batch upsert every 1000 points
+                if len(points) >= 1000:
+                    self.qdrant_client.upsert(
+                        collection_name=self.qdrant_collection_name,
+                        points=points
+                    )
+                    total_ingested += len(points)
+                    points = []
+        
+        # Upsert any remaining points
+        if points:
+            self.qdrant_client.upsert(
+                collection_name=self.qdrant_collection_name,
+                points=points
+            )
+            total_ingested += len(points)
+        logger.info(f"Ingested {total_ingested} embeddings for model '{embedding_model}' into Qdrant.")
 
-        def _ingest_object_detection():
-            obj_dir = self.data_dir / "object_detection"
-            if not obj_dir.exists():
-                logger.warning(f"Object detection directory {obj_dir} not found. Skipping.")
+    def ingest_object_detection(self):
+        obj_dir = self.data_dir / "object_detection"
+        if not obj_dir.exists():
+            logger.warning(f"Object detection directory {obj_dir} not found. Skipping.")
+            return
+
+        logger.info("Ingesting object detection metadata into Qdrant in batches...")
+        count = 0
+        operations = []
+
+        def _flush_operations():
+            nonlocal operations, count
+            if not operations:
                 return
-
-            logger.info("Ingesting object detection metadata into Qdrant in batches...")
-            count = 0
+            try:
+                self.qdrant_client.batch_update_points(
+                    collection_name=self.qdrant_collection_name,
+                    update_operations=operations
+                )
+                count += len(operations)
+            except Exception as e:
+                logger.error(f"Failed batch update for object detection payloads: {e}")
             operations = []
 
-            def _flush_operations():
-                nonlocal operations, count
-                if not operations:
-                    return
-                try:
-                    self.qdrant_client.batch_update_points(
-                        collection_name=self.qdrant_collection_name,
-                        update_operations=operations
+        # Collect all JSON files first for tqdm
+        all_json_files = []
+        for root, _, files in os.walk(obj_dir):
+            for file_name in files:
+                if file_name.endswith(".json"):
+                    all_json_files.append(Path(root) / file_name)
+
+        for json_path in tqdm(all_json_files, desc="🔍 Object Detection", unit="file"):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to read JSON {json_path}: {e}")
+                continue
+                
+            image_path = data.get("image_path", "")
+            if image_path:
+                parent_name = Path(image_path).parent.name
+                video_id = parent_name if parent_name and parent_name != "." else data.get("video_id")
+            else:
+                video_id = json_path.parent.name if json_path.parent.name else data.get("video_id")
+
+            keyframe_idx = data.get("keyframe_index")
+            if not video_id or keyframe_idx is None:
+                continue
+
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
+
+            payload = {
+                "objects": data.get("object_names", []),
+                "has_objects": data.get("has_objects", False),
+                "num_detections": data.get("num_detections", 0),
+                "class_counts": data.get("class_counts", {})
+            }
+
+            operations.append(
+                SetPayloadOperation(
+                    set_payload=SetPayload(
+                        payload=payload,
+                        points=[point_id]
                     )
-                    count += len(operations)
-                    logger.info(f"Batched object payload update: {count} points processed so far...")
-                except Exception as e:
-                    logger.error(f"Failed batch update for object detection payloads: {e}")
-                operations = []
+                )
+            )
 
-            for root, _, files in os.walk(obj_dir):
-                for file_name in files:
-                    if not file_name.endswith(".json"):
-                        continue
-                    
-                    json_path = Path(root) / file_name
-                    try:
-                        with open(json_path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                    except Exception as e:
-                        logger.error(f"Failed to read JSON {json_path}: {e}")
-                        continue
-                        
-                    image_path = data.get("image_path", "")
-                    if image_path:
-                        parent_name = Path(image_path).parent.name
-                        video_id = parent_name if parent_name and parent_name != "." else data.get("video_id")
-                    else:
-                        video_id = json_path.parent.name if json_path.parent.name else data.get("video_id")
+            if len(operations) >= 500:
+                _flush_operations()
 
-                    keyframe_idx = data.get("keyframe_index")
-                    if not video_id or keyframe_idx is None:
-                        continue
+        _flush_operations()
+        logger.info(f"Completed object detection payload ingestion for {count} points.")
+    
+    def ingest_ocr(self):
+        ocr_dir = self.data_dir / "ocr"
+        if not ocr_dir.exists():
+            logger.warning(f"OCR directory {ocr_dir} not found. Skipping OCR ingestion.")
+            return
+        setup_es_index(self.es_client, self.es_index_name, overwrite=True)
+        ingest_ocr_to_es(self.es_client, self.es_index_name, str(ocr_dir), OCR_SOURCES)
 
-                    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
+    def ingest_transcript(self):
+        transcript_dir = self.data_dir / "transcript"
+        if not transcript_dir.exists():
+            logger.warning(f"Transcript directory {transcript_dir} not found. Skipping transcript ingestion.")
+            return
+        setup_transcript_index(self.es_client, self.es_transcript_index_name, overwrite=True)
+        ingest_transcript_to_es(self.es_client, self.es_transcript_index_name, str(transcript_dir))
 
-                    payload = {
-                        "objects": data.get("object_names", []),
-                        "has_objects": data.get("has_objects", False),
-                        "num_detections": data.get("num_detections", 0),
-                        "class_counts": data.get("class_counts", {})
-                    }
-
-                    operations.append(
-                        SetPayloadOperation(
-                            set_payload=SetPayload(
-                                payload=payload,
-                                points=[point_id]
-                            )
-                        )
-                    )
-
-                    if len(operations) >= 500:
-                        _flush_operations()
-
-            _flush_operations()
-            logger.info(f"Completed object detection payload ingestion for {count} points.")
-        
-        def _ingest_ocr():
-            pass
-        
+    def ingest(self):
+        setup_qdrant_collection(self.qdrant_client, self.qdrant_collection_name, VECTOR_SIZES, overwrite=True)
         for model_name in VECTOR_SIZES.keys():    
-            _ingest_embedding(model_name)
-        _ingest_object_detection()
-        _ingest_ocr()
+            self.ingest_embedding(model_name)
+        self.ingest_object_detection()
+        self.ingest_ocr()
+        self.ingest_transcript()
 
     def _build_qdrant_filter(self, objects: list) -> Optional[Filter]:
         if not objects:
@@ -324,8 +349,256 @@ class RetrievalSystem:
                 
         return True
 
-    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100):
-        logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}.")
+    def ocr_search(self, query: str, ocr_sources: list = None, fuzziness: str = "AUTO", size: int = 500):
+        """
+        Standalone OCR text search. Returns results in the same format as semantic_search.
+        """
+        logger.info(f"Performing OCR search for: '{query}'")
+        ocr_hits = fuzzy_search_ocr(self.es_client, self.es_index_name, query,
+                                    ocr_sources=ocr_sources, fuzziness=fuzziness, size=size)
+        
+        results = []
+        for hit in ocr_hits:
+            video_id = hit["video_id"]
+            keyframe_idx = hit["keyframe_idx"]
+            
+            shot_start = 0
+            shot_end = 0
+            if video_id in self.shots_data:
+                boundaries = self.shots_data[video_id]
+                starts = [b[0] for b in boundaries]
+                idx = bisect.bisect_right(starts, keyframe_idx) - 1
+                if idx >= 0 and keyframe_idx <= boundaries[idx][1]:
+                    shot_start = boundaries[idx][0]
+                    shot_end = boundaries[idx][1]
+            
+            results.append({
+                "video_id": video_id,
+                "keyframe_index": keyframe_idx,
+                "score": hit["es_score"],
+                "shot_start_frame": shot_start,
+                "shot_end_frame": shot_end
+            })
+        
+        return results
+
+    def _get_ocr_filter_set(self, ocr_query: str, ocr_sources: list = None, fuzziness: str = "AUTO") -> set:
+        """
+        Get set of (video_id, keyframe_idx) from OCR fuzzy search for intersection filtering.
+        """
+        ocr_hits = fuzzy_search_ocr(self.es_client, self.es_index_name, ocr_query,
+                                    ocr_sources=ocr_sources, fuzziness=fuzziness, size=5000)
+        return {(h["video_id"], h["keyframe_idx"]) for h in ocr_hits}
+
+    def _get_transcript_filter_ranges(self, audio_query: str, fuzziness: str = "AUTO") -> dict:
+        """
+        Get transcript time ranges from ES fuzzy search.
+        Returns dict: {video_id: [(start_sec, end_sec), ...]} for matched segments.
+        """
+        hits = fuzzy_search_transcript(self.es_client, self.es_transcript_index_name,
+                                       audio_query, fuzziness=fuzziness, size=5000)
+        ranges = {}
+        for h in hits:
+            vid = h["video_id"]
+            if vid not in ranges:
+                ranges[vid] = []
+            ranges[vid].append((h["start"], h["end"]))
+        return ranges
+
+    def _frame_in_transcript_ranges(self, video_id: str, keyframe_idx: int, transcript_ranges: dict) -> bool:
+        """
+        Check if a keyframe falls within any matched transcript time range.
+        Converts keyframe_idx to seconds using the video's FPS.
+        """
+        if video_id not in transcript_ranges:
+            return False
+
+        # Get FPS for this video (default 25.0)
+        fps = 25.0
+        if video_id in self.video_metadata and "fps" in self.video_metadata[video_id]:
+            fps = self.video_metadata[video_id]["fps"]
+
+        frame_time_sec = keyframe_idx / fps
+
+        for (start_sec, end_sec) in transcript_ranges[video_id]:
+            if start_sec <= frame_time_sec <= end_sec:
+                return True
+        return False
+
+    def filter_search(self, ocr_query: str = None, audio_query: str = None, objects: list = None,
+                      group_by_shot: bool = False, score_threshold: float = 0.0, limit: int = 100):
+        """
+        Perform search purely using metadata filters (OCR, audio transcript, object detection)
+        without requiring a text query.
+        """
+        logger.info(f"Performing filter search with ocr_query='{ocr_query}', audio_query='{audio_query}', objects={objects}")
+
+        if not ocr_query and not audio_query and not objects:
+            return []
+
+        # 1. Gather transcript ranges if audio_query is given
+        transcript_ranges = None
+        if audio_query:
+            transcript_ranges = self._get_transcript_filter_ranges(audio_query)
+            if not transcript_ranges and not ocr_query and not objects:
+                return []
+
+        # Map: (video_id, keyframe_idx) -> score
+        candidates = {}
+
+        if ocr_query:
+            # Case A: OCR query provided
+            ocr_hits = fuzzy_search_ocr(self.es_client, self.es_index_name, ocr_query, size=2000)
+            
+            for hit in ocr_hits:
+                vid = hit["video_id"]
+                kf_idx = hit["keyframe_idx"]
+                score = hit["es_score"]
+                
+                # Check transcript filter if audio_query present
+                if transcript_ranges is not None and not self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges):
+                    continue
+
+                candidates[(vid, kf_idx)] = score
+
+            # Check object filter if objects present
+            if objects and candidates:
+                filtered_candidates = {}
+                for (vid, kf_idx), score in candidates.items():
+                    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{vid}_{kf_idx}"))
+                    try:
+                        retrieved = self.qdrant_client.retrieve(
+                            collection_name=self.qdrant_collection_name,
+                            ids=[point_id],
+                            with_payload=True
+                        )
+                        if retrieved and self._matches_object_filters(retrieved[0].payload, objects):
+                            filtered_candidates[(vid, kf_idx)] = score
+                    except Exception as e:
+                        logger.warning(f"Error retrieving Qdrant point {point_id}: {e}")
+                candidates = filtered_candidates
+
+        elif audio_query:
+            # Case B: Audio query provided (no OCR query)
+            qdrant_filter = self._build_qdrant_filter(objects) if objects else None
+            
+            points = []
+            if qdrant_filter:
+                res, _ = self.qdrant_client.scroll(
+                    collection_name=self.qdrant_collection_name,
+                    scroll_filter=qdrant_filter,
+                    limit=5000,
+                    with_payload=True
+                )
+                points = res
+            else:
+                for vid in list(transcript_ranges.keys()):
+                    v_filter = Filter(must=[FieldCondition(key="video_id", match=MatchValue(value=vid))])
+                    res, _ = self.qdrant_client.scroll(
+                        collection_name=self.qdrant_collection_name,
+                        scroll_filter=v_filter,
+                        limit=1000,
+                        with_payload=True
+                    )
+                    points.extend(res)
+
+            for p in points:
+                vid = p.payload.get("video_id")
+                kf_idx = p.payload.get("keyframe_idx", p.payload.get("frame_idx", 0))
+                if vid and kf_idx is not None:
+                    if self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges):
+                        candidates[(vid, kf_idx)] = 1.0
+
+        elif objects:
+            # Case C: Only object filter provided (no OCR, no audio)
+            qdrant_filter = self._build_qdrant_filter(objects)
+            points, _ = self.qdrant_client.scroll(
+                collection_name=self.qdrant_collection_name,
+                scroll_filter=qdrant_filter,
+                limit=limit * 5 if group_by_shot else limit,
+                with_payload=True
+            )
+            for p in points:
+                vid = p.payload.get("video_id")
+                kf_idx = p.payload.get("keyframe_idx", p.payload.get("frame_idx", 0))
+                if vid and kf_idx is not None:
+                    candidates[(vid, kf_idx)] = 1.0
+
+        # Build formatted output results
+        results = []
+        for (vid, kf_idx), score in candidates.items():
+            if score_threshold > 0 and score < score_threshold and score < 1.0:
+                continue
+
+            shot_start = 0
+            shot_end = 0
+            if vid in self.shots_data:
+                boundaries = self.shots_data[vid]
+                starts = [b[0] for b in boundaries]
+                idx = bisect.bisect_right(starts, kf_idx) - 1
+                if idx >= 0 and kf_idx <= boundaries[idx][1]:
+                    shot_start = boundaries[idx][0]
+                    shot_end = boundaries[idx][1]
+
+            results.append({
+                "video_id": vid,
+                "keyframe_index": kf_idx,
+                "score": score,
+                "shot_start_frame": shot_start,
+                "shot_end_frame": shot_end
+            })
+
+        if group_by_shot:
+            shot_dict = {}
+            for item in results:
+                key = (item["video_id"], item["shot_start_frame"], item["shot_end_frame"])
+                if key not in shot_dict:
+                    shot_dict[key] = []
+                shot_dict[key].append(item)
+
+            grouped_results = []
+            for (vid, start, end), items in shot_dict.items():
+                avg_score = sum(i["score"] for i in items) / len(items)
+                items.sort(key=lambda x: x["keyframe_index"])
+                anchor = items[0]
+                grouped_results.append({
+                    "type": "shot",
+                    "video_id": vid,
+                    "score": avg_score,
+                    "frames": items,
+                    "keyframe_index": anchor["keyframe_index"],
+                    "shot_start_frame": start,
+                    "shot_end_frame": end
+                })
+
+            grouped_results.sort(key=lambda x: x["score"], reverse=True)
+            return grouped_results[:limit]
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:limit]
+
+    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100, ocr_query: str = None, audio_query: str = None):
+        logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}, ocr_query: '{ocr_query}', audio_query: '{audio_query}'.")
+        
+        if not query or not query.strip():
+            return self.filter_search(
+                ocr_query=ocr_query,
+                audio_query=audio_query,
+                objects=objects,
+                group_by_shot=group_by_shot,
+                score_threshold=score_threshold,
+                limit=limit
+            )
+        
+        # Build OCR filter set if ocr_query is provided
+        ocr_filter_set = None
+        if ocr_query:
+            ocr_filter_set = self._get_ocr_filter_set(ocr_query)
+
+        # Build transcript filter ranges if audio_query is provided
+        transcript_ranges = None
+        if audio_query:
+            transcript_ranges = self._get_transcript_filter_ranges(audio_query)
         
         encoded_vectors = self.encode_query(query, model_names)
         
@@ -383,6 +656,26 @@ class RetrievalSystem:
                     final_scores[point_id] = 0.0
                 final_scores[point_id] += float(norm_score * weight / total_weight)
                 
+        # Apply OCR intersection filter before ranking
+        if ocr_filter_set is not None:
+            final_scores = {
+                pid: score for pid, score in final_scores.items()
+                if (all_payloads[pid].get("video_id"), all_payloads[pid].get("keyframe_idx", all_payloads[pid].get("frame_idx"))) in ocr_filter_set
+            }
+            logger.info(f"After OCR filter: {len(final_scores)} results remain.")
+
+        # Apply transcript intersection filter before ranking
+        if transcript_ranges is not None:
+            final_scores = {
+                pid: score for pid, score in final_scores.items()
+                if self._frame_in_transcript_ranges(
+                    all_payloads[pid].get("video_id"),
+                    all_payloads[pid].get("keyframe_idx", all_payloads[pid].get("frame_idx", 0)),
+                    transcript_ranges
+                )
+            }
+            logger.info(f"After transcript filter: {len(final_scores)} results remain.")
+
         # Rank and return
         ranked_points = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
         
@@ -443,14 +736,25 @@ class RetrievalSystem:
             
         return results[:limit]
 
-    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100):
-        logger.info(f"Performing temporal search for {len(queries)} queries with group_by_shot={group_by_shot}")
+    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100, ocr_query: str = None, audio_query: str = None):
+        logger.info(f"Performing temporal search for {len(queries) if queries else 0} queries with group_by_shot={group_by_shot}")
+        
+        valid_queries = [q.strip() for q in queries if q and q.strip()] if queries else []
+        if not valid_queries:
+            return self.filter_search(
+                ocr_query=ocr_query,
+                audio_query=audio_query,
+                objects=objects,
+                group_by_shot=group_by_shot,
+                score_threshold=score_threshold,
+                limit=limit
+            )
         
         # 1. Search each query
         query_results = []
-        for q in queries:
+        for q in valid_queries:
             # We get more than 1000 to ensure we have enough paths, or keep it 1000
-            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot)
+            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot, ocr_query=ocr_query, audio_query=audio_query)
             query_results.append(res)
             
         # 2. Group by video

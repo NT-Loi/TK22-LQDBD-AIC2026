@@ -5,6 +5,7 @@ __pycache__
 query-p1-groupA
 data
 qdrant
+es_data
 
 *.log
 .*

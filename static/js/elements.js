@@ -1,43 +1,27 @@
 export const elements = {
-  searchForm: document.getElementById("search-form"),
-  queryInputsContainer: document.getElementById("query-inputs-container"), // NEW
-  addQueryBtn: document.getElementById("add-query-btn"), // NEW
-
-  toggleFiltersBtn: document.getElementById("toggle-filters-btn"),
-  advancedFilters: document.getElementById("advanced-filters"),
-
-  // Group Shots Toggle
-  toggleGroupShotsBtn: document.getElementById("toggle-group-shots-btn"),
-
-  // Criteria Select
-  criteriaSelect: document.getElementById("criteria-select"),
-
-  // Object Filter Inputs
-  addObjectBtn: document.getElementById("add-object-btn"),
-  objectList: document.getElementById("object-list"),
-  objectSelect: document.getElementById("object-select"),
-  objectMin: document.getElementById("object-min"),
-  objectMax: document.getElementById("object-max"),
-  objectConfidence: document.getElementById("object-confidence"),
-
-  loginBtn: document.getElementById("login-btn"),
-
-  // Results & Controls
-  resultsContainer: document.getElementById("results-container"),
-
-  // Video Modal
-  modalOverlay: document.getElementById("video-modal"),
-  closeModalBtn: document.getElementById("close-modal-btn"),
-  modalVideoPlayer: document.getElementById("modal-video-player"),
-  modalVideoTitle: document.getElementById("modal-video-title"),
-
-  // Sidebar containers
-  modalContentWrapper: document.querySelector(".modal-content-wrapper"),
-  modalPlayerSection: document.querySelector(".modal-player-section"),
-  modalShotList: document.getElementById("modal-shot-list"),
-
-  // Evaluation Modal
-  evalModal: document.getElementById("evaluation-modal"),
-  evalListContainer: document.getElementById("evaluation-list"),
-  cancelEvalBtn: document.getElementById("cancel-eval-btn"),
+  get searchForm() { return document.getElementById("search-form"); },
+  get queryInputsContainer() { return document.getElementById("query-inputs-container"); },
+  get addQueryBtn() { return document.getElementById("add-query-btn"); },
+  get toggleFiltersBtn() { return document.getElementById("toggle-filters-btn"); },
+  get advancedFilters() { return document.getElementById("advanced-filters"); },
+  get toggleGroupShotsBtn() { return document.getElementById("toggle-group-shots-btn"); },
+  get criteriaSelect() { return document.getElementById("criteria-select"); },
+  get addObjectBtn() { return document.getElementById("add-object-btn"); },
+  get objectList() { return document.getElementById("object-list"); },
+  get objectSelect() { return document.getElementById("object-select"); },
+  get objectMin() { return document.getElementById("object-min"); },
+  get objectMax() { return document.getElementById("object-max"); },
+  get objectConfidence() { return document.getElementById("object-confidence"); },
+  get loginBtn() { return document.getElementById("login-btn"); },
+  get resultsContainer() { return document.getElementById("results-container"); },
+  get modalOverlay() { return document.getElementById("video-modal"); },
+  get closeModalBtn() { return document.getElementById("close-modal-btn"); },
+  get modalVideoPlayer() { return document.getElementById("modal-video-player"); },
+  get modalVideoTitle() { return document.getElementById("modal-video-title"); },
+  get modalContentWrapper() { return document.querySelector(".modal-content-wrapper"); },
+  get modalPlayerSection() { return document.querySelector(".modal-player-section"); },
+  get modalShotList() { return document.getElementById("modal-shot-list"); },
+  get evalModal() { return document.getElementById("evaluation-modal"); },
+  get evalListContainer() { return document.getElementById("evaluation-list"); },
+  get cancelEvalBtn() { return document.getElementById("cancel-eval-btn"); },
 };

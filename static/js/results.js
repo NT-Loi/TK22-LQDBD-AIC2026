@@ -11,6 +11,62 @@ function shuffleArray(array) {
   return array;
 }
 
+function groupResultsByShot(flatResults) {
+  const shotMap = new Map();
+
+  flatResults.forEach((item) => {
+    const hasShotInfo = item.shot_start_frame !== undefined && item.shot_end_frame !== undefined && item.shot_start_frame !== item.shot_end_frame;
+    const shotKey = hasShotInfo
+      ? `${item.video_id}_${item.shot_start_frame}_${item.shot_end_frame}`
+      : `${item.video_id}_single_${item.keyframe_index}`;
+
+    if (!shotMap.has(shotKey)) {
+      shotMap.set(shotKey, []);
+    }
+    shotMap.get(shotKey).push(item);
+  });
+
+  const grouped = [];
+  shotMap.forEach((items) => {
+    items.sort((a, b) => a.keyframe_index - b.keyframe_index);
+    const avgScore = items.reduce((sum, i) => sum + (i.score || 0), 0) / items.length;
+    const anchor = items[0];
+
+    grouped.push({
+      type: "shot",
+      video_id: anchor.video_id,
+      score: avgScore,
+      frames: items,
+      display_frames: items,
+      keyframe_index: anchor.keyframe_index,
+      shot_start_frame: anchor.shot_start_frame || 0,
+      shot_end_frame: anchor.shot_end_frame || 0,
+      fps: anchor.fps || 25.0
+    });
+  });
+
+  grouped.sort((a, b) => b.score - a.score);
+  return grouped;
+}
+
+function flattenGroupedResults(groupedResults) {
+  const flatMap = new Map();
+
+  groupedResults.forEach((group) => {
+    const frames = group.frames || [group];
+    frames.forEach((frame) => {
+      const key = `${frame.video_id}_${frame.keyframe_index}`;
+      if (!flatMap.has(key)) {
+        flatMap.set(key, frame);
+      }
+    });
+  });
+
+  const flat = Array.from(flatMap.values());
+  flat.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return flat;
+}
+
 export function displayResults(results, groupShots = false) {
   elements.resultsContainer.innerHTML = "";
 
@@ -20,11 +76,14 @@ export function displayResults(results, groupShots = false) {
     return;
   }
 
-  // Since backend handles grouping now, both single-query and temporal grouped results have a "frames" array.
-  if (results[0] && results[0].frames) {
-    displaySequenceResults(results);
+  const isGrouped = Boolean(results[0] && results[0].frames);
+
+  if (groupShots) {
+    const groupedData = isGrouped ? results : groupResultsByShot(results);
+    displaySequenceResults(groupedData);
   } else {
-    displayFlatResults(results);
+    const flatData = isGrouped ? flattenGroupedResults(results) : results;
+    displayFlatResults(flatData);
   }
 }
 

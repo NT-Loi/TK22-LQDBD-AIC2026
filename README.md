@@ -1,82 +1,105 @@
-# Video Retrieval System
+# Video Retrieval System — AIC 2026
 
-A full-stack, multimodal video retrieval engine supporting zero-shot semantic text-to-video search and temporal multi-event sequence matching.
+A full-stack, multimodal video retrieval engine supporting zero-shot semantic text-to-video search, temporal multi-event sequence matching, metadata filter search (OCR, Audio Transcript, Object Detection).
 
-## Prerequisites & Infrastructure
+---
 
-The project relies on Docker for vector and text search databases.
-- **Qdrant**: For fast dense vector similarity search.
+## 🏗️ Prerequisites & Infrastructure
 
-### 1. Start Databases
-Start the required databases using the provided `docker-compose.yml`:
+The engine relies on Docker for vector similarity and text search databases:
+- **Qdrant** (`:6333`): High-performance vector database for dense feature embeddings and object payload filtering.
+- **Elasticsearch** (`:9200`): Fuzzy text search engine for OCR and Whisper transcript matching.
+
+### 1. Start Infrastructure Services
+Start the required databases using Docker Compose:
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
-This will expose Qdrant on `localhost:6333`.
+Verify that Qdrant (`http://localhost:6333`) and Elasticsearch (`http://localhost:9200`) are running.
 
-### 2. Data Folder Structure
+---
+
+## 📁 Data Folder Structure
+
 Ensure your `data/` directory is structured as follows at the root of the project:
 
 ```text
 data/
-├── embedding/              # Pre-extracted embedding .pt files
-│   └── <model_name>/       # e.g., CLIP_H14
-│       └── keyframe_<idx>.pt
-├── keyframe/               # Extracted keyframes (or keyframes/)
-│   └── <video_id>/
+├── embedding/                  # Pre-extracted visual embedding .pt files
+│   ├── CLIP_H14/               # e.g., CLIP ViT-H-14 embeddings
+│   └── SigLIP/                 # e.g., SigLIP embeddings
+├── keyframe/                   # Extracted keyframe WebP images
+│   └── <video_id>/             # e.g., L21_V001/
 │       └── keyframe_<idx>.webp
-├── object_detection/       # Object detection outputs for ES
-├── ocr/                    # OCR outputs for ES
-├── shot/                   # Shot boundary mapping JSONs
-│   └── all_scenes_<prefix>.json     
-└── video/                  # Raw .mp4 video files
+├── object_detection/           # YOLOE object detection outputs
+│   └── <video_id>/             # e.g., L21_V001/
+│       └── keyframe_<idx>.json
+├── ocr/                        # OCR outputs per model source
+│   ├── PaddleOCR-VL-1.6/       # e.g., PaddleOCR outputs
+│   └── PP-OCRv6/               # e.g., PP-OCRv6 outputs
+├── transcript/                 # Whisper audio transcript outputs
+│   └── <video_id>.json         # Transcribed speech segments per video
+├── shot/                       # Shot boundary JSON mappings
+│   └── all_scenes_<prefix>.json
+├── video/                      # Raw .mp4 video files
+│   └── <video_id>.mp4
+└── video_metadata.json         # Video FPS and duration metadata
 ```
-
-### 3. Run the Backend Server
-Install the required Python dependencies using `uv` (as the project configures dependencies in `pyproject.toml` and locks them in `uv.lock`), and start the server:
-
-```bash
-# Install dependencies and sync virtual environment
-uv sync
-
-# Start the web interface and API
-uv run uvicorn app:app --reload
-```
-
-Alternatively, if you do not have `uv` installed, you can use standard `pip` to install the dependencies defined in `pyproject.toml`:
-
-```bash
-# Install package dependencies
-pip install .
-
-# Start the web interface and API
-uvicorn app:app --reload
-```
-The application will be available at `http://localhost:8000`.
 
 ---
 
-## Architecture & Retrieval Logic
+## 🔄 Re-Ingesting Data (Before Running)
 
-The core retrieval engine is built around a dynamic multi-model pipeline. It allows selecting multiple models simultaneously, normalizing their similarity scores, and fusing them together for robust predictions.
+Before running the retrieval system for the first time or after adding new data/embeddings, you **must ingest the data** into Qdrant and Elasticsearch.
 
-### 1. Single Query (Semantic Search)
-1. **Encoding**: The user's text query is encoded using the selected CLIP models.
-2. **Vector Retrieval**: The engine queries Qdrant to retrieve the `Top K` most visually similar keyframes.
-3. **Score Fusion**: If multiple models are selected (e.g., `clip-vit-b-32` and `clip-vit-l-14`), the raw cosine similarities are Min-Max normalized and fused via a weighted average.
-4. **Thresholding**: Any frame with a final score below the user-defined `Score Threshold` is discarded.
+### Option 1: Automatic Re-Ingestion via `app.py`
+In `app.py`, set `re_ingest=True` in the `lifespan` handler:
 
-### 2. Temporal Search (Multi-Query Sequence Matching)
-When a user inputs multiple events (e.g., "Event 1: A man runs" -> "Event 2: A car crashes"), the system performs **Temporal Search**.
-1. Independent semantic searches are executed for both queries, pulling top candidates for each.
-2. Candidates are grouped by `video_id`.
-3. A **Depth-First Search (DFS)** algorithm runs to find all valid sequence combinations where:
-   - `Event 2` happens strictly after `Event 1`.
-   - The gap between `Event 1` and `Event 2` is `<= config.MAX_FRAME_GAP` (default 2000 frames).
-4. The valid sequences are ranked by their average score and returned to the UI.
+```python
+# app.py
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global system, video_metadata
+    # Set re_ingest=True to rebuild Qdrant & Elasticsearch indices on startup
+    system = RetrievalSystem(re_ingest=True)
+    video_metadata = load_video_metadata()
+    yield
+```
 
-### 3. Group By Shot (Shot-Level Aggregation)
-Because standard retrieval matches individual frames, you often get massive combinatorial noise (matching 5 identical frames in Shot A to 5 identical frames in Shot B). Toggling **Group Shots** fixes this by consolidating visual logic:
+Then launch the app (see below). Set back to `re_ingest=False` after the first run.
 
-* **In Single Query**: The backend maps every retrieved frame to its parent `shot_start_frame` and `shot_end_frame` using binary search (`bisect`). It then groups frames belonging to the same shot, calculating a single `avg_score` for the shot.
-* **In Temporal Search**: The DFS sequence matcher builds paths out of the *aggregated shots* instead of raw frames. The chronological constraint safely transitions to shot boundaries: `Shot 2` must start *after* `Shot 1` ends, with the distance `<= MAX_FRAME_GAP`. This drastically reduces noise and outputs highly clean, logical sequence matches.
+### Option 2: Manual CLI Script Re-Ingestion
+To trigger data re-ingestion directly via Python CLI:
+
+```bash
+# Re-ingest ALL data (Embeddings, Object Detection, OCR, Transcripts)
+uv run python -c "from retrieval_system import RetrievalSystem; RetrievalSystem(re_ingest=True)"
+```
+
+Or re-ingest a specific module individually:
+```bash
+# Ingest Object Detection payload only
+uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalSystem(); sys.ingest_object_detection()"
+
+# Ingest OCR to Elasticsearch only
+uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalSystem(); sys.ingest_ocr()"
+
+# Ingest Transcripts to Elasticsearch only
+uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalSystem(); sys.ingest_transcript()"
+```
+
+---
+
+## 🚀 Running the Server
+
+Install Python dependencies using `uv` and start the FastAPI web application:
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Run web application server
+uv run uvicorn app:app --reload
+```
+
+The web interface will be live at `http://localhost:8000`.

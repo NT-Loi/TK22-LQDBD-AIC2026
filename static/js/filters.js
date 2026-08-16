@@ -1,13 +1,15 @@
 import { elements } from './elements.js';
 
 export function initFilters() {
-    // Toggle Advanced Filters
-    elements.toggleFiltersBtn.addEventListener('click', () => {
-        elements.advancedFilters.classList.toggle('hidden');
-        elements.toggleFiltersBtn.textContent = elements.advancedFilters.classList.contains('hidden') 
-            ? '▼ Advanced Filters' 
-            : '▲ Hide Filters';
-    });
+    // Toggle Advanced Filters (legacy — filters are now always visible in sidebar)
+    if (elements.toggleFiltersBtn && elements.advancedFilters) {
+        elements.toggleFiltersBtn.addEventListener('click', () => {
+            elements.advancedFilters.classList.toggle('hidden');
+            elements.toggleFiltersBtn.textContent = elements.advancedFilters.classList.contains('hidden') 
+                ? '▼ Advanced Filters' 
+                : '▲ Hide Filters';
+        });
+    }
 
     // Add Object to List
     elements.addObjectBtn.addEventListener('click', () => {

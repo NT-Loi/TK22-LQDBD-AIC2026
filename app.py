@@ -43,6 +43,7 @@ class SearchQuery(BaseModel):
     models: List[str]
     objects: list
     audio: str
+    ocr_query: Optional[str] = None
     group_by_shot: bool = False
     score_threshold: float = 0.3
     limit: int = 100
@@ -59,31 +60,46 @@ async def get_models():
 
 @app.post("/search")
 async def search(query: SearchQuery):
-    if not query.text_queries or query.anchor_index >= len(query.text_queries):
-        return []
+    valid_text_queries = [t.strip() for t in query.text_queries if t and t.strip()] if query.text_queries else []
     
-    primary_query = query.text_queries[query.anchor_index]
+    # Resolve audio query and ocr query (empty string means no filter)
+    audio_query = query.audio.strip() if query.audio and query.audio.strip() else None
+    ocr_query = query.ocr_query.strip() if query.ocr_query and query.ocr_query.strip() else None
     
     # Determine model_names based on selected models
     model_names = None
     if query.models and "all" not in query.models:
         model_names = query.models
     
-    if len(query.text_queries) > 1:
+    if len(valid_text_queries) > 1:
         # Perform temporal search
         results = system.temporal_search(
-            query.text_queries, 
+            valid_text_queries, 
             model_names=model_names, 
             objects=query.objects,
             group_by_shot=query.group_by_shot, 
             score_threshold=query.score_threshold,
-            limit=query.limit
+            limit=query.limit,
+            ocr_query=ocr_query,
+            audio_query=audio_query
+        )
+    elif len(valid_text_queries) == 1:
+        # Perform search using the single event query
+        results = system.semantic_search(
+            valid_text_queries[0], 
+            model_names=model_names, 
+            objects=query.objects,
+            score_threshold=query.score_threshold,
+            group_by_shot=query.group_by_shot,
+            limit=query.limit,
+            ocr_query=ocr_query,
+            audio_query=audio_query
         )
     else:
-        # Perform search using the primary event query
-        results = system.semantic_search(
-            primary_query, 
-            model_names=model_names, 
+        # No text queries -> Filter search (OCR, audio transcript, object detection)
+        results = system.filter_search(
+            ocr_query=ocr_query,
+            audio_query=audio_query,
             objects=query.objects,
             score_threshold=query.score_threshold,
             group_by_shot=query.group_by_shot,
@@ -105,6 +121,28 @@ async def search(query: SearchQuery):
             for frame in item["display_frames"]:
                 frame["fps"] = fps
             
+    return results
+
+class OCRSearchQuery(BaseModel):
+    query: str
+    fuzziness: str = "AUTO"
+    limit: int = 200
+
+@app.post("/ocr-search")
+async def ocr_search(query: OCRSearchQuery):
+    if not query.query:
+        return []
+    
+    results = system.ocr_search(query.query, fuzziness=query.fuzziness, size=query.limit)
+    
+    # Add FPS metadata
+    for item in results:
+        vid = item.get("video_id")
+        fps = 25.0
+        if vid and vid in video_metadata and "fps" in video_metadata[vid]:
+            fps = video_metadata[vid]["fps"]
+        item["fps"] = fps
+    
     return results
 
 @app.post("/api/login")
@@ -129,4 +167,4 @@ async def submit(data: SubmitData):
     return {"status": "success"}
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
