@@ -117,6 +117,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       selectedModels = Array.from(modelsSelect.options).filter(o => o.selected).map(o => o.value);
     }
 
+    const thresholdInput = document.getElementById("score-threshold")?.value;
+    const parsedThreshold = parseFloat(thresholdInput);
+    const scoreThreshold = isNaN(parsedThreshold) ? 0.0 : parsedThreshold;
+
     const queryData = {
       text_queries: textQueries, // List of strings
       anchor_index: anchorIndex, // Index of query used for sorting
@@ -125,7 +129,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       audio: document.getElementById("audio-query-input")?.value.trim() || "",
       ocr_query: document.getElementById("ocr-query-input")?.value.trim() || "",
       group_by_shot: isGroupShots,
-      score_threshold: parseFloat(document.getElementById("score-threshold")?.value) || 0.3,
+      score_threshold: scoreThreshold,
       limit: parseInt(document.getElementById("result-limit")?.value) || 100
     };
 

@@ -11,13 +11,13 @@ OCR_SOURCES = ["PaddleOCR-VL-1.6", "PP-OCRv6"]
 ES_TRANSCRIPT_INDEX_NAME = "transcript_segments"
 
 VECTOR_SIZES = {
-        "CLIP_H14": 1024,
+        # "CLIP_H14": 1024,
         "SigLIP": 1152,
         # "SigLIP2": 1536,
     }
 
 EMBEDDING_WEIGHTS = {
-        "CLIP_H14": 1.0,
+        # "CLIP_H14": 1.0,
         "SigLIP": 1.0,
         # "SigLIP2": 1.0,
     }

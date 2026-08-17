@@ -54,7 +54,7 @@ class SearchQuery(BaseModel):
     audio: str
     ocr_query: Optional[str] = None
     group_by_shot: bool = False
-    score_threshold: float = 0.3
+    score_threshold: float = 0.0
     limit: int = 100
 
 @app.get("/")
