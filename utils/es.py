@@ -12,13 +12,13 @@ logger.setLevel(logging.INFO)
 
 def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = False):
     """
-    Create the Elasticsearch index for OCR text with a custom analyzer
-    that supports fuzzy matching and Vietnamese diacritics folding.
+    Create the Elasticsearch index for OCR text with custom analyzers
+    supporting exact, fuzzy, and edge-ngram partial matching.
     """
     if es_client.indices.exists(index=index_name):
         if overwrite:
             logger.info(f"ES index '{index_name}' exists. Deleting...")
-            es_client.indices.delete(index=index_name)
+            es_client.indices.delete(index=index_name, request_timeout=300)
         else:
             logger.info(f"ES index '{index_name}' already exists. Skipping creation.")
             return
@@ -26,10 +26,23 @@ def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = 
     index_body = {
         "settings": {
             "analysis": {
+                "tokenizer": {
+                    "ocr_edge_ngram_tokenizer": {
+                        "type": "edge_ngram",
+                        "min_gram": 2,
+                        "max_gram": 15,
+                        "token_chars": ["letter", "digit"]
+                    }
+                },
                 "analyzer": {
                     "ocr_analyzer": {
                         "type": "custom",
                         "tokenizer": "standard",
+                        "filter": ["lowercase", "asciifolding"]
+                    },
+                    "ocr_ngram_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "ocr_edge_ngram_tokenizer",
                         "filter": ["lowercase", "asciifolding"]
                     }
                 }
@@ -42,14 +55,20 @@ def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = 
                 "ocr_source": {"type": "keyword"},
                 "ocr_text": {
                     "type": "text",
-                    "analyzer": "ocr_analyzer"
+                    "analyzer": "ocr_analyzer",
+                    "fields": {
+                        "ngram": {
+                            "type": "text",
+                            "analyzer": "ocr_ngram_analyzer"
+                        }
+                    }
                 }
             }
         }
     }
 
-    es_client.indices.create(index=index_name, body=index_body)
-    logger.info(f"ES index '{index_name}' created successfully.")
+    es_client.indices.create(index=index_name, body=index_body, request_timeout=300)
+    logger.info(f"ES index '{index_name}' created successfully with N-Gram support.")
 
 
 def ingest_ocr_to_es(es_client: Elasticsearch, index_name: str, ocr_dir: str, ocr_sources: list):
@@ -138,14 +157,18 @@ def fuzzy_search_ocr(es_client: Elasticsearch, index_name: str, query: str,
     Returns a set of (video_id, keyframe_idx) tuples that match the query,
     along with their ES scores for optional re-ranking.
     """
-    # Build the query
+    # Build match clause with optimized prefix_length and max_expansions
+    match_params = {
+        "query": query,
+    }
+    if fuzziness and str(fuzziness).upper() != "0":
+        match_params["fuzziness"] = fuzziness
+        match_params["prefix_length"] = 2
+        match_params["max_expansions"] = 10
+
     must_clause = {
         "match": {
-            "ocr_text": {
-                "query": query,
-                "fuzziness": fuzziness,
-                "prefix_length": 1
-            }
+            "ocr_text": match_params
         }
     }
 
@@ -188,13 +211,13 @@ def fuzzy_search_ocr(es_client: Elasticsearch, index_name: str, query: str,
 
 def setup_transcript_index(es_client: Elasticsearch, index_name: str, overwrite: bool = False):
     """
-    Create the Elasticsearch index for transcript segments with a custom analyzer
-    that supports fuzzy matching and Vietnamese diacritics folding.
+    Create the Elasticsearch index for transcript segments with custom analyzers
+    supporting exact, fuzzy, and edge-ngram partial matching.
     """
     if es_client.indices.exists(index=index_name):
         if overwrite:
             logger.info(f"ES index '{index_name}' exists. Deleting...")
-            es_client.indices.delete(index=index_name)
+            es_client.indices.delete(index=index_name, request_timeout=300)
         else:
             logger.info(f"ES index '{index_name}' already exists. Skipping creation.")
             return
@@ -202,10 +225,23 @@ def setup_transcript_index(es_client: Elasticsearch, index_name: str, overwrite:
     index_body = {
         "settings": {
             "analysis": {
+                "tokenizer": {
+                    "transcript_edge_ngram_tokenizer": {
+                        "type": "edge_ngram",
+                        "min_gram": 2,
+                        "max_gram": 15,
+                        "token_chars": ["letter", "digit"]
+                    }
+                },
                 "analyzer": {
                     "transcript_analyzer": {
                         "type": "custom",
                         "tokenizer": "standard",
+                        "filter": ["lowercase", "asciifolding"]
+                    },
+                    "transcript_ngram_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "transcript_edge_ngram_tokenizer",
                         "filter": ["lowercase", "asciifolding"]
                     }
                 }
@@ -219,14 +255,20 @@ def setup_transcript_index(es_client: Elasticsearch, index_name: str, overwrite:
                 "end": {"type": "float"},
                 "text": {
                     "type": "text",
-                    "analyzer": "transcript_analyzer"
+                    "analyzer": "transcript_analyzer",
+                    "fields": {
+                        "ngram": {
+                            "type": "text",
+                            "analyzer": "transcript_ngram_analyzer"
+                        }
+                    }
                 }
             }
         }
     }
 
-    es_client.indices.create(index=index_name, body=index_body)
-    logger.info(f"ES transcript index '{index_name}' created successfully.")
+    es_client.indices.create(index=index_name, body=index_body, request_timeout=300)
+    logger.info(f"ES transcript index '{index_name}' created successfully with N-Gram support.")
 
 
 def ingest_transcript_to_es(es_client: Elasticsearch, index_name: str, transcript_dir: str):
@@ -298,15 +340,19 @@ def fuzzy_search_transcript(es_client: Elasticsearch, index_name: str, query: st
     Returns a list of dicts with {video_id, start, end, es_score}
     representing time ranges where the queried text was spoken.
     """
+    match_params = {
+        "query": query,
+    }
+    if fuzziness and str(fuzziness).upper() != "0":
+        match_params["fuzziness"] = fuzziness
+        match_params["prefix_length"] = 2
+        match_params["max_expansions"] = 10
+
     es_query = {
         "bool": {
             "must": [{
                 "match": {
-                    "text": {
-                        "query": query,
-                        "fuzziness": fuzziness,
-                        "prefix_length": 1
-                    }
+                    "text": match_params
                 }
             }]
         }

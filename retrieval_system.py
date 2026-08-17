@@ -19,7 +19,7 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import List, Optional
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, Range, SetPayloadOperation, SetPayload
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, MatchAny, Range, SetPayloadOperation, SetPayload
 from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
@@ -51,7 +51,7 @@ class RetrievalSystem:
         if not self.qdrant_client.collection_exists(self.qdrant_collection_name):
             logger.warning(f"Qdrant collection '{self.qdrant_collection_name}' does not exist. Please run ingestion.")
 
-        self.es_client = Elasticsearch(ES_HOST_URL, request_timeout=30)
+        self.es_client = Elasticsearch(ES_HOST_URL, request_timeout=300)
         self.es_index_name = ES_INDEX_NAME
         self.es_transcript_index_name = ES_TRANSCRIPT_INDEX_NAME
 
@@ -393,7 +393,7 @@ class RetrievalSystem:
     def _get_transcript_filter_ranges(self, audio_query: str, fuzziness: str = "AUTO") -> dict:
         """
         Get transcript time ranges from ES fuzzy search.
-        Returns dict: {video_id: [(start_sec, end_sec), ...]} for matched segments.
+        Returns dict: {video_id: [{"start": start_sec, "end": end_sec, "score": score}, ...]} for matched segments.
         """
         hits = fuzzy_search_transcript(self.es_client, self.es_transcript_index_name,
                                        audio_query, fuzziness=fuzziness, size=5000)
@@ -402,16 +402,21 @@ class RetrievalSystem:
             vid = h["video_id"]
             if vid not in ranges:
                 ranges[vid] = []
-            ranges[vid].append((h["start"], h["end"]))
+            ranges[vid].append({
+                "start": h["start"],
+                "end": h["end"],
+                "score": h["es_score"]
+            })
         return ranges
 
-    def _frame_in_transcript_ranges(self, video_id: str, keyframe_idx: int, transcript_ranges: dict) -> bool:
+    def _frame_in_transcript_ranges(self, video_id: str, keyframe_idx: int, transcript_ranges: dict) -> float:
         """
         Check if a keyframe falls within any matched transcript time range.
         Converts keyframe_idx to seconds using the video's FPS.
+        Returns highest matching ES score, or 0.0 if not matched.
         """
         if video_id not in transcript_ranges:
-            return False
+            return 0.0
 
         # Get FPS for this video (default 25.0)
         fps = 25.0
@@ -419,11 +424,19 @@ class RetrievalSystem:
             fps = self.video_metadata[video_id]["fps"]
 
         frame_time_sec = keyframe_idx / fps
+        max_score = 0.0
 
-        for (start_sec, end_sec) in transcript_ranges[video_id]:
-            if start_sec <= frame_time_sec <= end_sec:
-                return True
-        return False
+        for item in transcript_ranges[video_id]:
+            if isinstance(item, dict):
+                s_sec, e_sec, sc = item["start"], item["end"], item["score"]
+            else:
+                s_sec, e_sec, sc = item[0], item[1], 1.0
+
+            if s_sec <= frame_time_sec <= e_sec:
+                if sc > max_score:
+                    max_score = sc
+
+        return max_score
 
     def filter_search(self, ocr_query: str = None, audio_query: str = None, objects: list = None,
                       group_by_shot: bool = False, score_threshold: float = 0.0, limit: int = 100):
@@ -453,30 +466,33 @@ class RetrievalSystem:
             for hit in ocr_hits:
                 vid = hit["video_id"]
                 kf_idx = hit["keyframe_idx"]
-                score = hit["es_score"]
+                ocr_score = hit["es_score"]
                 
-                # Check transcript filter if audio_query present
-                if transcript_ranges is not None and not self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges):
+                aud_score = self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges) if transcript_ranges is not None else 1.0
+                if transcript_ranges is not None and aud_score == 0.0:
                     continue
 
-                candidates[(vid, kf_idx)] = score
+                candidates[(vid, kf_idx)] = ocr_score + (aud_score if transcript_ranges is not None else 0.0)
 
             # Check object filter if objects present
             if objects and candidates:
-                filtered_candidates = {}
-                for (vid, kf_idx), score in candidates.items():
-                    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{vid}_{kf_idx}"))
-                    try:
-                        retrieved = self.qdrant_client.retrieve(
-                            collection_name=self.qdrant_collection_name,
-                            ids=[point_id],
-                            with_payload=True
-                        )
-                        if retrieved and self._matches_object_filters(retrieved[0].payload, objects):
+                point_ids = [str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{vid}_{kf_idx}")) for (vid, kf_idx) in candidates.keys()]
+                try:
+                    retrieved_points = self.qdrant_client.retrieve(
+                        collection_name=self.qdrant_collection_name,
+                        ids=point_ids,
+                        with_payload=True
+                    )
+                    filtered_candidates = {}
+                    for p in retrieved_points:
+                        vid = p.payload.get("video_id")
+                        kf_idx = p.payload.get("keyframe_idx", p.payload.get("frame_idx", 0))
+                        if self._matches_object_filters(p.payload, objects):
+                            score = candidates.get((vid, kf_idx), 1.0)
                             filtered_candidates[(vid, kf_idx)] = score
-                    except Exception as e:
-                        logger.warning(f"Error retrieving Qdrant point {point_id}: {e}")
-                candidates = filtered_candidates
+                    candidates = filtered_candidates
+                except Exception as e:
+                    logger.warning(f"Error batch retrieving Qdrant points: {e}")
 
         elif audio_query:
             # Case B: Audio query provided (no OCR query)
@@ -492,22 +508,24 @@ class RetrievalSystem:
                 )
                 points = res
             else:
-                for vid in list(transcript_ranges.keys()):
-                    v_filter = Filter(must=[FieldCondition(key="video_id", match=MatchValue(value=vid))])
+                vids = list(transcript_ranges.keys())
+                if vids:
+                    v_filter = Filter(must=[FieldCondition(key="video_id", match=MatchAny(any=vids))])
                     res, _ = self.qdrant_client.scroll(
                         collection_name=self.qdrant_collection_name,
                         scroll_filter=v_filter,
-                        limit=1000,
+                        limit=5000,
                         with_payload=True
                     )
-                    points.extend(res)
+                    points = res
 
             for p in points:
                 vid = p.payload.get("video_id")
                 kf_idx = p.payload.get("keyframe_idx", p.payload.get("frame_idx", 0))
                 if vid and kf_idx is not None:
-                    if self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges):
-                        candidates[(vid, kf_idx)] = 1.0
+                    aud_score = self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges)
+                    if aud_score > 0.0:
+                        candidates[(vid, kf_idx)] = aud_score
 
         elif objects:
             # Case C: Only object filter provided (no OCR, no audio)
