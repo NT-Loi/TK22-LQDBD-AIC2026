@@ -17,9 +17,9 @@ import torch
 import uuid
 from tqdm import tqdm
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, MatchAny, Range, SetPayloadOperation, SetPayload
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams
 from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
@@ -635,6 +635,7 @@ class RetrievalSystem:
                 query=query_vector,
                 using=model_name,
                 limit=top_k,
+                search_params=SearchParams(exact=True),
                 with_payload=True
             ).points
 
