@@ -432,7 +432,7 @@ class RetrievalSystem:
             else:
                 s_sec, e_sec, sc = item[0], item[1], 1.0
 
-            if s_sec <= frame_time_sec <= e_sec:
+            if (s_sec - 2.0) <= frame_time_sec <= (e_sec + 2.0):
                 if sc > max_score:
                     max_score = sc
 
