@@ -173,11 +173,6 @@ function initDynamicInputs() {
 
   elements.addQueryBtn.addEventListener("click", () => {
     const rows = elements.queryInputsContainer.querySelectorAll(".query-row");
-    if (rows.length >= 3) {
-      alert("Maximum 3 events allow.");
-      return;
-    }
-
     const newIndex = rows.length;
     const div = document.createElement("div");
     div.className = "search-row query-row";

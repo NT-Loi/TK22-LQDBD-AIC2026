@@ -782,7 +782,7 @@ class RetrievalSystem:
             for item in res_list:
                 vid = item["video_id"]
                 if vid not in video_grouped:
-                    video_grouped[vid] = [[] for _ in range(len(queries))]
+                    video_grouped[vid] = [[] for _ in range(len(valid_queries))]
                 video_grouped[vid][q_idx].append(item)
                 
         # 3. Find valid paths via DFS for each video
@@ -794,7 +794,7 @@ class RetrievalSystem:
                 continue
             
             # Items are already aggregated if group_by_shot=True
-            for i in range(len(queries)):
+            for i in range(len(valid_queries)):
                 if group_by_shot:
                     vid_group[i].sort(key=lambda x: x["shot_start_frame"])
                 else:
@@ -802,7 +802,7 @@ class RetrievalSystem:
             vid_group_to_search = vid_group
             
             def find_paths(current_q_idx, current_path):
-                if current_q_idx == len(queries):
+                if current_q_idx == len(valid_queries):
                     all_sequences.append(list(current_path))
                     return
                     

@@ -230,10 +230,17 @@ function displaySequenceResults(results) {
     
     // Use display_frames (best frame per shot) for card thumbnails, fallback to frames
     let displayFrames = seq.display_frames || seq.frames;
-    const gridClass = `items-${displayFrames.length > 4 ? 4 : displayFrames.length}`;
+    const numFrames = displayFrames.length;
+    let gridStyle = "";
+    if (numFrames > 4) {
+      const cols = Math.ceil(Math.sqrt(numFrames));
+      const rows = Math.ceil(numFrames / cols);
+      gridStyle = `style="grid-template-columns: repeat(${cols}, 1fr); grid-template-rows: repeat(${rows}, 1fr);"`;
+    }
+    const gridClass = `items-${numFrames > 4 ? 4 : numFrames}`;
     
-    let gridHTML = `<div class="shot-thumbnails-grid ${gridClass}">`;
-    displayFrames.slice(0, 4).forEach((itm) => {
+    let gridHTML = `<div class="shot-thumbnails-grid ${gridClass}" ${gridStyle}>`;
+    displayFrames.forEach((itm) => {
       gridHTML += `<div style="position:relative; width:100%; height:100%;">
         <img src="/keyframes/${itm.video_id}/keyframe_${itm.keyframe_index}.webp" loading="lazy" style="width:100%; height:100%; object-fit:cover;">
         <span style="position:absolute; bottom:2px; right:2px; background:rgba(0,0,0,0.7); color:white; font-size:10px; padding:2px; border-radius:2px;">${itm.keyframe_index}</span>
