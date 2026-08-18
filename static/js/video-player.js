@@ -3,6 +3,76 @@ import { submitResultAPI } from "./api.js";
 
 let currentOpenVideoId = null;
 
+let modalSidebarSortMode = "time";
+
+function renderModalSidebar(items, isTemporal, specificKeyframe, fps) {
+  if (!elements.modalShotList) return;
+  elements.modalShotList.innerHTML = "";
+
+  if (!items || items.length === 0) {
+    elements.modalShotList.innerHTML = "<div style='padding:10px; color:#8b949e;'>No frames list available.</div>";
+    return;
+  }
+
+  // Header container
+  const headerDiv = document.createElement("div");
+  headerDiv.style.cssText = "padding: 8px 10px; background: #21262d; border-bottom: 1px solid #30363d; display: flex; align-items: center; justify-content: space-between;";
+
+  const titleSpan = document.createElement("span");
+  titleSpan.style.cssText = "color: #c9d1d9; font-size: 13px; font-weight: 600;";
+  titleSpan.textContent = isTemporal ? "Sequence Events" : `Matched Keyframes (${items.length})`;
+  headerDiv.appendChild(titleSpan);
+
+  // Sort button
+  const sortBtn = document.createElement("button");
+  sortBtn.id = "modal-sort-btn";
+  sortBtn.style.cssText = "background: #30363d; color: #58a6ff; border: 1px solid #58a6ff; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; cursor: pointer; transition: background 0.2s;";
+  sortBtn.textContent = modalSidebarSortMode === "score" ? "Sort: Score ⬇" : "Sort: Time ⬆";
+
+  sortBtn.addEventListener("click", () => {
+    modalSidebarSortMode = modalSidebarSortMode === "score" ? "time" : "score";
+    renderModalSidebar(items, isTemporal, specificKeyframe, fps);
+  });
+
+  headerDiv.appendChild(sortBtn);
+  elements.modalShotList.appendChild(headerDiv);
+
+  // Sort items according to sort mode
+  const sortedItems = [...items];
+  if (modalSidebarSortMode === "score") {
+    sortedItems.sort((a, b) => (b.score || 0) - (a.score || 0));
+  } else {
+    sortedItems.sort((a, b) => a.keyframe_index - b.keyframe_index);
+  }
+
+  sortedItems.forEach((item) => {
+    const itemDiv = document.createElement("div");
+    itemDiv.className = "sidebar-keyframe-item";
+    if (item.keyframe_index === specificKeyframe) {
+      itemDiv.classList.add("active");
+      itemDiv.style.border = "2px solid #58a6ff";
+    }
+
+    const titleText = isTemporal ? `Event ${item.query_index + 1}` : `Frame: ${item.keyframe_index}`;
+    const scoreVal = typeof item.score === "number" ? item.score.toFixed(3) : "N/A";
+
+    itemDiv.innerHTML = `
+        <img src="/keyframes/${item.video_id}/keyframe_${item.keyframe_index}.webp" loading="lazy">
+        <div class="sidebar-info">
+            <strong>${titleText}</strong>
+            <span>Score: ${scoreVal}</span>
+            ${item.ocr_text ? `<div style="font-size:10px; color:#58a6ff; margin-top:2px; max-height:2.4em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.ocr_text}">🔍 ${item.ocr_text}</div>` : ""}
+            ${item.audio_text ? `<div style="font-size:10px; color:#e3b341; margin-top:2px; max-height:2.4em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.audio_text}">🎙️ ${item.audio_text}</div>` : ""}
+        </div>
+    `;
+    itemDiv.addEventListener("click", () => {
+      elements.modalVideoPlayer.currentTime = item.keyframe_index / fps;
+      elements.modalVideoPlayer.play();
+    });
+    elements.modalShotList.appendChild(itemDiv);
+  });
+}
+
 export function initVideoModal() {
   elements.closeModalBtn.addEventListener("click", closeModal);
   elements.modalOverlay.addEventListener("click", (e) => {
@@ -212,66 +282,15 @@ export function openModal(
     hoverTargetTime = null;
   });
 
-  // --- 5. SIDEBAR PLAYLIST (NEW LOGIC + OLD LOGIC) ---
-  if (elements.modalShotList) {
-    elements.modalShotList.innerHTML = "";
-
-    // Ưu tiên 1: Sequence
-    if (sequenceData && sequenceData.length > 0) {
-      const header = document.createElement("h5");
-      header.textContent = "Sequence Events";
-      header.style.padding = "10px";
-      header.style.margin = "0";
-      header.style.background = "#eef";
-      elements.modalShotList.appendChild(header);
-
-      sequenceData.forEach((item) => {
-        const itemDiv = document.createElement("div");
-        itemDiv.className = "sidebar-keyframe-item";
-        if (item.keyframe_index === specificKeyframe) {
-          itemDiv.classList.add("active"); // CSS active style
-          itemDiv.style.border = "2px solid #0077b6";
-        }
-
-        itemDiv.innerHTML = `
-                <img src="/keyframes/${item.video_id}/keyframe_${item.keyframe_index}.webp" loading="lazy">
-                <div class="sidebar-info">
-                    <strong>Event ${item.query_index + 1}</strong>
-                    <span>Frame: ${item.keyframe_index}</span>
-                </div>
-            `;
-        itemDiv.addEventListener("click", () => {
-          elements.modalVideoPlayer.currentTime = item.keyframe_index / fps;
-          elements.modalVideoPlayer.play();
-        });
-        elements.modalShotList.appendChild(itemDiv);
-      });
-    }
-    // Ưu tiên 2: Shot List (Group Shot)
-    else if (shotData && shotData.items) {
-      const sortedItems = [...shotData.items].sort(
-        (a, b) => a.keyframe_index - b.keyframe_index,
-      );
-      sortedItems.forEach((kf) => {
-        const itemDiv = document.createElement("div");
-        itemDiv.className = "sidebar-keyframe-item";
-        itemDiv.innerHTML = `
-            <img src="/keyframes/${kf.video_id}/keyframe_${kf.keyframe_index}.webp" loading="lazy">
-            <div class="sidebar-info">
-                <strong>Frame: ${kf.keyframe_index}</strong>
-                <span>Score: ${(kf.score || 0).toFixed(3)}</span>
-            </div>
-          `;
-        itemDiv.addEventListener("click", () => {
-          elements.modalVideoPlayer.currentTime = kf.keyframe_index / fps;
-          elements.modalVideoPlayer.play();
-        });
-        elements.modalShotList.appendChild(itemDiv);
-      });
-    } else {
-      elements.modalShotList.innerHTML =
-        "<div style='padding:10px'>No frames list available.</div>";
-    }
+  // --- 5. SIDEBAR PLAYLIST (WITH SORT BY SCORE/TIME TOGGLE) ---
+  if (sequenceData && sequenceData.length > 0) {
+    const isTemporal = sequenceData[0] && sequenceData[0].query_index !== undefined;
+    renderModalSidebar(sequenceData, isTemporal, specificKeyframe, fps);
+  } else if (shotData && shotData.items) {
+    renderModalSidebar(shotData.items, false, specificKeyframe, fps);
+  } else if (elements.modalShotList) {
+    elements.modalShotList.innerHTML =
+      "<div style='padding:10px; color:#8b949e;'>No frames list available.</div>";
   }
 
   // --- 6. CONTROLS (NEW) ---

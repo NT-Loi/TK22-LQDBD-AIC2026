@@ -71,14 +71,17 @@ def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = 
     logger.info(f"ES index '{index_name}' created successfully with N-Gram support.")
 
 
-def ingest_ocr_to_es(es_client: Elasticsearch, index_name: str, ocr_dir: str, ocr_sources: list):
+def ingest_ocr_to_es(es_client: Elasticsearch, index_name: str, ocr_dir: str, ocr_sources: list = None):
     """
     Ingest OCR JSON files into Elasticsearch.
     
     Directory structure: ocr_dir/{ocr_source}/{video_id}/{keyframe_id}.json
-    Each JSON has rec_texts (list of strings) which are joined into a single text.
+    Supports both V6 (rec_texts) and VL1.6 (parsing_res_list) JSON formats.
     """
     ocr_path = Path(ocr_dir)
+    if not ocr_sources:
+        ocr_sources = [d.name for d in ocr_path.iterdir() if d.is_dir()]
+
     total_indexed = 0
 
     for source in ocr_sources:
@@ -96,9 +99,10 @@ def ingest_ocr_to_es(es_client: Elasticsearch, index_name: str, ocr_dir: str, oc
                 if not file_name.endswith(".json"):
                     continue
 
-                # Parse keyframe_idx from filename: {keyframe_id}.json
+                # Parse keyframe_idx from filename: keyframe_{keyframe_id}.json or {keyframe_id}.json
+                clean_name = file_name.replace("keyframe_", "").replace(".json", "")
                 try:
-                    keyframe_idx = int(file_name.replace(".json", ""))
+                    keyframe_idx = int(clean_name)
                 except ValueError:
                     logger.warning(f"Skipping file with unexpected name: {file_name}")
                     continue
@@ -111,7 +115,19 @@ def ingest_ocr_to_es(es_client: Elasticsearch, index_name: str, ocr_dir: str, oc
                     logger.error(f"Failed to read {json_path}: {e}")
                     continue
 
-                rec_texts = data.get("rec_texts", [])
+                rec_texts = []
+                # V6 format: rec_texts list
+                if "rec_texts" in data and isinstance(data["rec_texts"], list):
+                    rec_texts.extend([t.strip() for t in data["rec_texts"] if isinstance(t, str) and t.strip()])
+
+                # VL1.6 format: parsing_res_list
+                if "parsing_res_list" in data and isinstance(data["parsing_res_list"], list):
+                    for block in data["parsing_res_list"]:
+                        if isinstance(block, dict) and block.get("block_content"):
+                            txt = block["block_content"].strip()
+                            if txt:
+                                rec_texts.append(txt)
+
                 if not rec_texts:
                     continue
 
@@ -143,19 +159,19 @@ def ingest_ocr_to_es(es_client: Elasticsearch, index_name: str, ocr_dir: str, oc
             success, _ = bulk(es_client, actions, raise_on_error=False)
             total_indexed += success
 
-        logger.info(f"Completed OCR ingestion for source '{source}'. Total indexed: {total_indexed}")
+        logger.info(f"Completed OCR ingestion for source '{source}'. Total indexed so far: {total_indexed}")
 
     logger.info(f"OCR ingestion complete. Total documents indexed: {total_indexed}")
     return total_indexed
 
 
 def fuzzy_search_ocr(es_client: Elasticsearch, index_name: str, query: str,
-                     ocr_sources: list = None, fuzziness: str = "AUTO", size: int = 500):
+                     ocr_sources: list = None, fuzziness: str = "AUTO", size: int = 5000):
     """
     Perform fuzzy text search on OCR data.
     
-    Returns a set of (video_id, keyframe_idx) tuples that match the query,
-    along with their ES scores for optional re-ranking.
+    If multiple sources (e.g. V6 and VL1.6) match the same (video_id, keyframe_idx),
+    the score for that keyframe will be max(v6_score, vl1.6_score).
     """
     # Build match clause with optimized prefix_length and max_expansions
     match_params = {
@@ -188,21 +204,28 @@ def fuzzy_search_ocr(es_client: Elasticsearch, index_name: str, query: str,
         index=index_name,
         query=es_query,
         size=size,
-        _source=["video_id", "keyframe_idx", "ocr_source"]
+        _source=["video_id", "keyframe_idx", "ocr_source", "ocr_text"]
     )
 
-    results = []
-    seen = set()
+    frame_scores = {}
     for hit in response["hits"]["hits"]:
         src = hit["_source"]
         key = (src["video_id"], src["keyframe_idx"])
-        if key not in seen:
-            seen.add(key)
-            results.append({
+        score = float(hit["_score"])
+        
+        # Max score aggregation between V6 and VL1.6 (or any matching sources)
+        if key not in frame_scores or score > frame_scores[key]["es_score"]:
+            frame_scores[key] = {
                 "video_id": src["video_id"],
                 "keyframe_idx": src["keyframe_idx"],
-                "es_score": hit["_score"]
-            })
+                "ocr_source": src.get("ocr_source"),
+                "ocr_text": src.get("ocr_text", ""),
+                "es_score": score
+            }
+
+    results = list(frame_scores.values())
+    results.sort(key=lambda x: x["es_score"], reverse=True)
+    return results
 
     return results
 
@@ -362,7 +385,7 @@ def fuzzy_search_transcript(es_client: Elasticsearch, index_name: str, query: st
         index=index_name,
         query=es_query,
         size=size,
-        _source=["video_id", "start", "end"]
+        _source=["video_id", "start", "end", "text"]
     )
 
     results = []
@@ -372,6 +395,7 @@ def fuzzy_search_transcript(es_client: Elasticsearch, index_name: str, query: st
             "video_id": src["video_id"],
             "start": src["start"],
             "end": src["end"],
+            "text": src.get("text", ""),
             "es_score": hit["_score"]
         })
 

@@ -31,6 +31,7 @@ function groupResultsByShot(flatResults) {
     items.sort((a, b) => a.keyframe_index - b.keyframe_index);
     const avgScore = items.reduce((sum, i) => sum + (i.score || 0), 0) / items.length;
     const anchor = items[0];
+    const ocrText = items.find((i) => i.ocr_text && i.ocr_text.trim())?.ocr_text || "";
 
     grouped.push({
       type: "shot",
@@ -41,7 +42,44 @@ function groupResultsByShot(flatResults) {
       keyframe_index: anchor.keyframe_index,
       shot_start_frame: anchor.shot_start_frame || 0,
       shot_end_frame: anchor.shot_end_frame || 0,
-      fps: anchor.fps || 25.0
+      fps: anchor.fps || 25.0,
+      ocr_text: ocrText
+    });
+  });
+
+  grouped.sort((a, b) => b.score - a.score);
+  return grouped;
+}
+
+function groupResultsByVideo(flatResults) {
+  const videoMap = new Map();
+
+  flatResults.forEach((item) => {
+    const videoKey = item.video_id;
+    if (!videoMap.has(videoKey)) {
+      videoMap.set(videoKey, []);
+    }
+    videoMap.get(videoKey).push(item);
+  });
+
+  const grouped = [];
+  videoMap.forEach((items, video_id) => {
+    items.sort((a, b) => a.keyframe_index - b.keyframe_index);
+    const avgScore = items.reduce((sum, i) => sum + (i.score || 0), 0) / items.length;
+    const anchor = items[0];
+    const ocrText = items.find((i) => i.ocr_text && i.ocr_text.trim())?.ocr_text || "";
+
+    grouped.push({
+      type: "video",
+      video_id: video_id,
+      score: avgScore,
+      frames: items,
+      display_frames: items,
+      keyframe_index: anchor.keyframe_index,
+      shot_start_frame: items[0].keyframe_index,
+      shot_end_frame: items[items.length - 1].keyframe_index,
+      fps: anchor.fps || 25.0,
+      ocr_text: ocrText
     });
   });
 
@@ -67,7 +105,44 @@ function flattenGroupedResults(groupedResults) {
   return flat;
 }
 
-export function displayResults(results, groupShots = false) {
+function groupSequencesByVideo(sequenceResults) {
+  const videoMap = new Map();
+
+  sequenceResults.forEach((seq) => {
+    const vid = seq.video_id;
+    if (!videoMap.has(vid)) {
+      videoMap.set(vid, []);
+    }
+    videoMap.get(vid).push(seq);
+  });
+
+  const grouped = [];
+  videoMap.forEach((seqList, vid) => {
+    const totalScore = seqList.reduce((sum, s) => sum + (s.sequence_score || s.score || 0), 0);
+    const videoAvgScore = totalScore / seqList.length;
+
+    const bestSeq = seqList.reduce((max, s) => 
+      ((s.best_sequence_score || s.sequence_score || s.score || 0) > 
+       (max.best_sequence_score || max.sequence_score || max.score || 0)) ? s : max, seqList[0]);
+
+    grouped.push({
+      type: "video",
+      video_id: vid,
+      sequence_score: videoAvgScore,
+      best_sequence_score: bestSeq.best_sequence_score || bestSeq.sequence_score || bestSeq.score,
+      frames: bestSeq.frames,
+      display_frames: bestSeq.display_frames || bestSeq.frames,
+      all_sequences_count: seqList.length,
+      keyframe_index: bestSeq.keyframe_index,
+      score: videoAvgScore,
+    });
+  });
+
+  grouped.sort((a, b) => b.sequence_score - a.sequence_score);
+  return grouped;
+}
+
+export function displayResults(results, groupMode = "none") {
   elements.resultsContainer.innerHTML = "";
 
   if (!results || results.length === 0) {
@@ -78,12 +153,18 @@ export function displayResults(results, groupShots = false) {
 
   const isGrouped = Boolean(results[0] && results[0].frames);
 
-  if (groupShots) {
-    const groupedData = isGrouped ? results : groupResultsByShot(results);
+  if (groupMode === "video") {
+    const groupedData = isGrouped ? groupSequencesByVideo(results) : groupResultsByVideo(results);
     displaySequenceResults(groupedData);
-  } else {
+  } else if (groupMode === "shot" || groupMode === true) {
     const flatData = isGrouped ? flattenGroupedResults(results) : results;
-    displayFlatResults(flatData);
+    const groupedData = groupResultsByShot(flatData);
+    displaySequenceResults(groupedData);
+  } else if (isGrouped) {
+    // Default: Show individual temporal sequence pairs as separate cards (even if same video)
+    displaySequenceResults(results);
+  } else {
+    displayFlatResults(results);
   }
 }
 
@@ -130,7 +211,10 @@ function displayFlatResults(results) {
                           : "";
                       })
                       .join("")}
+                    ${item.frames ? `<span style="color:#58a6ff; font-weight:bold;">🖼️ Keyframes: ${item.frames.length}</span>` : ""}
                 </div>
+                ${item.ocr_text ? `<div style="font-size:11px; color:#58a6ff; margin-top:3px; max-height:2.6em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.ocr_text}">🔍 <strong>OCR:</strong> ${item.ocr_text}</div>` : ""}
+                ${item.audio_text ? `<div style="font-size:11px; color:#e3b341; margin-top:3px; max-height:2.6em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.audio_text}">🎙️ <strong>Audio:</strong> ${item.audio_text}</div>` : ""}
                 ${item.temporal_sequence ? `<div style="font-size:11px; color:blue; margin-top:2px; font-weight:bold;">🔗 Sequence: ${item.temporal_sequence.length} events</div>` : ""}
                 <button class="card-submit-btn" type="button">Submit</button>
             </div>`;
@@ -160,7 +244,7 @@ function displayFlatResults(results) {
         fps,
         null,
         item.keyframe_index,
-        item.temporal_sequence,
+        item.temporal_sequence || item.frames,
       );
     });
 
@@ -249,14 +333,24 @@ function displaySequenceResults(results) {
     gridHTML += `</div>`;
 
     // Info
+    const totalKeyframes = seq.frames ? seq.frames.length : numFrames;
+    const isVideoGroupedCard = Boolean(seq.all_sequences_count && seq.all_sequences_count > 1);
+    const scoreLabel = isVideoGroupedCard ? "Video Avg Score" : "Score";
+    const bestScoreHTML = (isVideoGroupedCard && seq.best_sequence_score)
+      ? `<br><span style="font-size:11px; color:#238636; font-weight:bold;">Best Pair Score: ${seq.best_sequence_score.toFixed(3)}</span>`
+      : "";
+    const pairsCountHTML = isVideoGroupedCard
+      ? `<br><span style="font-size:11px; color:#8b949e;">Pairs in Video: ${seq.all_sequences_count}</span>`
+      : "";
+
     const infoHTML = `
             <div class="shot-info">
                 <h3>${seq.video_id}</h3>
                 <div class="shot-stats">
-                    Matches: ${seq.frames.length}<br>
-                    Avg Score: ${(seq.sequence_score || seq.score).toFixed(3)}
+                    <strong style="color:#58a6ff;">🖼️ Keyframes:</strong> ${totalKeyframes}<br>
+                    <strong>${scoreLabel}:</strong> ${(seq.sequence_score || seq.score).toFixed(3)}${bestScoreHTML}${pairsCountHTML}
                 </div>
-                <button class="card-submit-btn" style="margin-top: 5px; width:100%; font-size:12px; padding:4px;">Submit Anchor</button>
+                <button class="card-submit-btn">Submit Anchor</button>
             </div>
         `;
 

@@ -26,8 +26,8 @@ Ensure your `data/` directory is structured as follows at the root of the projec
 ```text
 data/
 ├── embedding/                  # Pre-extracted visual embedding .pt files
-│   ├── CLIP_H14/               # e.g., CLIP ViT-H-14 embeddings
-│   └── SigLIP/                 # e.g., SigLIP embeddings
+│   ├── SigLIP/                 # e.g., SigLIP embeddings
+│   └── SigLIP2/                # e.g., SigLIP2 embeddings
 ├── keyframe/                   # Extracted keyframe WebP images
 │   └── <video_id>/             # e.g., L21_V001/
 │       └── keyframe_<idx>.webp
@@ -92,13 +92,16 @@ uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalS
 
 ## 🚀 Running the Server
 
-Install Python dependencies using `uv` and start the FastAPI web application:
+Install Python dependencies using `uv`, generate video metadata, and start the FastAPI web application:
 
 ```bash
 # 1. Install dependencies
 uv sync
 
-# 2. Run web application server
+# 2. Generate FPS metadata (keyframe -> timestamp mapping)
+uv run python utils/video_metadata.py
+
+# 3. Run web application server
 uv run uvicorn app:app --reload
 ```
 

@@ -533,17 +533,34 @@ body {
 }
 
 .shot-info {
-  padding: 10px;
+  padding: 12px;
   border-top: 1px solid #30363d;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #161b22;
 }
 .shot-info h3 {
-  margin: 0 0 5px 0;
+  margin: 0;
   font-size: 13px;
+  font-weight: 600;
   color: #c9d1d9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .shot-stats {
   font-size: 11px;
   color: #8b949e;
+  line-height: 1.5;
+}
+.shot-info .card-submit-btn {
+  position: static;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: center;
 }
 
 /* ═══════════════════════════════════════

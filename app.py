@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Union
 import uvicorn
 import os
 from contextlib import asynccontextmanager
@@ -46,14 +46,17 @@ app.mount("/keyframes", StaticFiles(directory="data/keyframe"), name="keyframes"
 
 templates = Jinja2Templates(directory="templates")
 
+from typing import List, Optional, Union, Any
+
 class SearchQuery(BaseModel):
-    text_queries: List[str]
-    anchor_index: int
-    models: List[str]
-    objects: list
-    audio: str
-    ocr_query: Optional[str] = None
+    text_queries: Optional[List[Any]] = []
+    anchor_index: int = 0
+    models: Optional[List[str]] = None
+    objects: Optional[List[Any]] = None
+    audio: Optional[Any] = None
+    ocr_query: Optional[Any] = None
     group_by_shot: bool = False
+    group_by_video: bool = False
     score_threshold: float = 0.0
     limit: int = 100
 
@@ -69,11 +72,56 @@ async def get_models():
 
 @app.post("/search")
 async def search(query: SearchQuery):
-    valid_text_queries = [t.strip() for t in query.text_queries if t and t.strip()] if query.text_queries else []
+    valid_text_queries = []
+    if isinstance(query.text_queries, list):
+        for item in query.text_queries:
+            if isinstance(item, str) and item.strip():
+                valid_text_queries.append({"text": item.strip()})
+            elif isinstance(item, dict):
+                text_val = str(item.get("text", "")).strip()
+                if text_val:
+                    valid_text_queries.append(item)
     
-    # Resolve audio query and ocr query (empty string means no filter)
-    audio_query = query.audio.strip() if query.audio and query.audio.strip() else None
-    ocr_query = query.ocr_query.strip() if query.ocr_query and query.ocr_query.strip() else None
+    # Resolve audio query (can be string, dict, or list of strings/dicts)
+    valid_audio_queries = []
+    if isinstance(query.audio, list):
+        for item in query.audio:
+            if isinstance(item, str) and item.strip():
+                valid_audio_queries.append({"text": item.strip(), "level": "frame"})
+            elif isinstance(item, dict):
+                text_val = str(item.get("text", "")).strip()
+                if text_val:
+                    lvl = str(item.get("level", "frame")).strip().lower()
+                    valid_audio_queries.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
+    elif isinstance(query.audio, str) and query.audio.strip():
+        valid_audio_queries.append({"text": query.audio.strip(), "level": "frame"})
+    elif isinstance(query.audio, dict):
+        text_val = str(query.audio.get("text", "")).strip()
+        if text_val:
+            lvl = str(query.audio.get("level", "frame")).strip().lower()
+            valid_audio_queries.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
+
+    # Resolve OCR query (can be string, dict, or list of strings/dicts)
+    valid_ocr_queries = []
+    if isinstance(query.ocr_query, list):
+        for item in query.ocr_query:
+            if isinstance(item, str) and item.strip():
+                valid_ocr_queries.append({"text": item.strip(), "level": "frame"})
+            elif isinstance(item, dict):
+                text_val = str(item.get("text", "")).strip()
+                if text_val:
+                    lvl = str(item.get("level", "frame")).strip().lower()
+                    valid_ocr_queries.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
+    elif isinstance(query.ocr_query, str) and query.ocr_query.strip():
+        valid_ocr_queries.append({"text": query.ocr_query.strip(), "level": "frame"})
+    elif isinstance(query.ocr_query, dict):
+        text_val = str(query.ocr_query.get("text", "")).strip()
+        if text_val:
+            lvl = str(query.ocr_query.get("level", "frame")).strip().lower()
+            valid_ocr_queries.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
+
+    audio_query = valid_audio_queries if valid_audio_queries else None
+    ocr_query = valid_ocr_queries if valid_ocr_queries else None
     
     # Determine model_names based on selected models
     model_names = None
@@ -86,7 +134,7 @@ async def search(query: SearchQuery):
             valid_text_queries, 
             model_names=model_names, 
             objects=query.objects,
-            group_by_shot=query.group_by_shot, 
+            group_by_video=query.group_by_video, 
             score_threshold=query.score_threshold,
             limit=query.limit,
             ocr_query=ocr_query,
@@ -94,15 +142,21 @@ async def search(query: SearchQuery):
         )
     elif len(valid_text_queries) == 1:
         # Perform search using the single event query
+        q_item = valid_text_queries[0]
+        q_text = q_item["text"] if isinstance(q_item, dict) else str(q_item)
+        q_ocr = q_item.get("ocr") if (isinstance(q_item, dict) and q_item.get("ocr") is not None) else ocr_query
+        q_audio = q_item.get("audio") if (isinstance(q_item, dict) and q_item.get("audio") is not None) else audio_query
+        q_objects = q_item.get("objects") if (isinstance(q_item, dict) and q_item.get("objects") is not None) else query.objects
+
         results = system.semantic_search(
-            valid_text_queries[0], 
+            q_text, 
             model_names=model_names, 
-            objects=query.objects,
+            objects=q_objects,
             score_threshold=query.score_threshold,
             group_by_shot=query.group_by_shot,
             limit=query.limit,
-            ocr_query=ocr_query,
-            audio_query=audio_query
+            ocr_query=q_ocr,
+            audio_query=q_audio
         )
     else:
         # No text queries -> Filter search (OCR, audio transcript, object detection)

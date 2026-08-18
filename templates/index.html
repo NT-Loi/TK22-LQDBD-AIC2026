@@ -25,9 +25,34 @@
         <section class="sidebar-section">
           <label class="section-label">🔍 Text Queries</label>
           <div id="query-inputs-container">
-            <div class="search-row query-row" data-index="0">
-              <input type="text" name="description_0" class="main-query-input"
-                placeholder="Event 1 (e.g. Woman in purple)..." autocomplete="off">
+            <div class="search-row query-row" data-index="0" style="flex-direction: column; align-items: stretch;">
+              <div style="display: flex; gap: 5px;">
+                <input type="text" name="description_0" class="main-query-input"
+                  placeholder="Event 1 (e.g. Woman in purple)..." autocomplete="off" style="flex: 1;">
+                <button type="button" class="toggle-event-filter-btn" style="background: #238636; color: white; border: none; border-radius: 4px; padding: 0 8px; font-size: 12px; cursor: pointer;" title="Event Sub-filters">⚙️ Filters</button>
+              </div>
+              <div class="event-filter-panel" style="display: none; margin-top: 6px; padding: 6px; background: rgba(255,255,255,0.05); border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
+                <div style="margin-bottom: 4px;">
+                  <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">📝 Event 1 OCR Filter:</label>
+                  <div style="display: flex; gap: 4px;">
+                    <input type="text" class="event-ocr-input sidebar-input" placeholder="OCR for Event 1..." style="font-size: 11px; padding: 4px;">
+                    <select class="event-ocr-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
+                      <option value="frame" selected>Frame</option>
+                      <option value="video">Video</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">🎙️ Event 1 Audio Filter:</label>
+                  <div style="display: flex; gap: 4px;">
+                    <input type="text" class="event-audio-input sidebar-input" placeholder="Audio for Event 1..." style="font-size: 11px; padding: 4px;">
+                    <select class="event-audio-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
+                      <option value="frame" selected>Frame</option>
+                      <option value="video">Video</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           <button type="button" id="add-query-btn" class="btn btn-add">+ Add Event</button>
@@ -36,15 +61,33 @@
         <!-- OCR Query -->
         <section class="sidebar-section">
           <label class="section-label">📝 OCR Filter</label>
-          <input type="text" id="ocr-query-input" class="sidebar-input"
-            placeholder="Text visible on screen..." autocomplete="off">
+          <div id="ocr-inputs-container">
+            <div class="search-row ocr-row" data-index="0">
+              <input type="text" name="ocr_0" class="sidebar-input ocr-query-input"
+                placeholder="Text visible on screen..." autocomplete="off">
+              <select name="ocr_level_0" class="sidebar-select-sm ocr-level-select" style="width: 72px; flex-shrink: 0;">
+                <option value="frame" selected>Frame</option>
+                <option value="video">Video</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" id="add-ocr-btn" class="btn btn-add">+ Add OCR Query</button>
         </section>
 
         <!-- Audio/Transcript Query -->
         <section class="sidebar-section">
           <label class="section-label">🎙️ Audio Transcript Filter</label>
-          <input type="text" id="audio-query-input" class="sidebar-input"
-            placeholder="Spoken words in video..." autocomplete="off">
+          <div id="audio-inputs-container">
+            <div class="search-row audio-row" data-index="0">
+              <input type="text" name="audio_0" class="sidebar-input audio-query-input"
+                placeholder="Spoken words in video..." autocomplete="off">
+              <select name="audio_level_0" class="sidebar-select-sm audio-level-select" style="width: 72px; flex-shrink: 0;">
+                <option value="frame" selected>Frame</option>
+                <option value="video">Video</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" id="add-audio-btn" class="btn btn-add">+ Add Audio Query</button>
         </section>
 
         <!-- Search Options -->
@@ -142,7 +185,10 @@
     <main class="results-area">
       <div class="results-header">
         <span id="results-count" class="results-count">Results: 0</span>
-        <button type="button" id="toggle-group-shots-btn" class="btn btn-toggle-shots">Group Shots: OFF</button>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" id="toggle-group-shots-btn" class="btn btn-toggle-shots">Group Shots: OFF</button>
+          <button type="button" id="toggle-group-video-btn" class="btn btn-toggle-shots">Group Video: OFF</button>
+        </div>
       </div>
       <div id="results-container">
         <p class="placeholder">Enter queries on the left panel and click Search.</p>
@@ -184,7 +230,7 @@
     </div>
   </div>
 
-  <script type="module" src="/static/js/main.js?v=3"></script>
+  <script type="module" src="/static/js/main.js?v=5"></script>
 </body>
 
 </html>

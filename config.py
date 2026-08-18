@@ -6,7 +6,7 @@ QDRANT_COLLECTION_NAME = "video_frames"
 ES_HOST_URL = "http://localhost:9200"
 ES_INDEX_NAME = "ocr_frames"
 
-OCR_SOURCES = ["PaddleOCR-VL-1.6", "PP-OCRv6"]
+OCR_SOURCES = ["V6", "VL1.6"]
 
 ES_TRANSCRIPT_INDEX_NAME = "transcript_segments"
 

@@ -382,63 +382,239 @@ class RetrievalSystem:
         
         return results
 
-    def _get_ocr_filter_set(self, ocr_query: str, ocr_sources: list = None, fuzziness: str = "AUTO") -> set:
+    def _get_ocr_filter_ranges(self, ocr_query, fuzziness: str = "AUTO") -> dict:
         """
-        Get set of (video_id, keyframe_idx) from OCR fuzzy search for intersection filtering.
+        Get OCR filter data for single or multiple OCR queries with per-query level ('frame' or 'video').
+        Returns dict with 'common_vids', 'query_items', and 'combined_ocr_text_map'.
         """
-        ocr_hits = fuzzy_search_ocr(self.es_client, self.es_index_name, ocr_query,
-                                    ocr_sources=ocr_sources, fuzziness=fuzziness, size=5000)
-        return {(h["video_id"], h["keyframe_idx"]) for h in ocr_hits}
+        parsed_queries = []
+        if isinstance(ocr_query, str):
+            if ocr_query.strip():
+                parsed_queries.append({"text": ocr_query.strip(), "level": "frame"})
+        elif isinstance(ocr_query, list):
+            for item in ocr_query:
+                if isinstance(item, str) and item.strip():
+                    parsed_queries.append({"text": item.strip(), "level": "frame"})
+                elif isinstance(item, dict) and item.get("text", "").strip():
+                    lvl = item.get("level", "frame")
+                    if lvl not in ("frame", "video"):
+                        lvl = "frame"
+                    parsed_queries.append({"text": item["text"].strip(), "level": lvl})
 
-    def _get_transcript_filter_ranges(self, audio_query: str, fuzziness: str = "AUTO") -> dict:
-        """
-        Get transcript time ranges from ES fuzzy search.
-        Returns dict: {video_id: [{"start": start_sec, "end": end_sec, "score": score}, ...]} for matched segments.
-        """
-        hits = fuzzy_search_transcript(self.es_client, self.es_transcript_index_name,
-                                       audio_query, fuzziness=fuzziness, size=5000)
-        ranges = {}
-        for h in hits:
-            vid = h["video_id"]
-            if vid not in ranges:
-                ranges[vid] = []
-            ranges[vid].append({
-                "start": h["start"],
-                "end": h["end"],
-                "score": h["es_score"]
+        if not parsed_queries:
+            return {}
+
+        query_items = []
+        combined_ocr_text_map = {}
+
+        for q in parsed_queries:
+            hits = fuzzy_search_ocr(self.es_client, self.es_index_name,
+                                    q["text"], fuzziness=fuzziness, size=5000)
+            vid_map = {}
+            for h in hits:
+                vid = h["video_id"]
+                kf_idx = h["keyframe_idx"]
+                if vid not in vid_map:
+                    vid_map[vid] = {}
+                vid_map[vid][kf_idx] = {
+                    "score": h["es_score"],
+                    "ocr_text": h.get("ocr_text", "")
+                }
+                combined_ocr_text_map[(vid, kf_idx)] = h.get("ocr_text", "")
+
+            query_items.append({
+                "text": q["text"],
+                "level": q["level"],
+                "vid_map": vid_map
             })
-        return ranges
 
-    def _frame_in_transcript_ranges(self, video_id: str, keyframe_idx: int, transcript_ranges: dict) -> float:
+        if not query_items:
+            return {}
+
+        # AND Logic: Keep only videos present in ALL per_query_ocr_results
+        common_vids = set(query_items[0]["vid_map"].keys())
+        for q_item in query_items[1:]:
+            common_vids &= set(q_item["vid_map"].keys())
+
+        if not common_vids:
+            return {}
+
+        return {
+            "common_vids": common_vids,
+            "query_items": query_items,
+            "combined_ocr_text_map": combined_ocr_text_map
+        }
+
+    def _frame_in_ocr_ranges(self, video_id: str, keyframe_idx: int, ocr_data: dict) -> float:
         """
-        Check if a keyframe falls within any matched transcript time range.
-        Converts keyframe_idx to seconds using the video's FPS.
-        Returns highest matching ES score, or 0.0 if not matched.
+        Check if a keyframe passes per-query OCR filters (AND logic across queries, per-query level).
+        Returns combined score (>0.0) if passed, or 0.0 if failed.
         """
-        if video_id not in transcript_ranges:
+        if not ocr_data or "common_vids" not in ocr_data:
             return 0.0
 
-        # Get FPS for this video (default 25.0)
+        if video_id not in ocr_data["common_vids"]:
+            return 0.0
+
+        total_score = 0.0
+
+        for q_item in ocr_data["query_items"]:
+            level = q_item["level"]
+            vid_map = q_item["vid_map"]
+            frames_dict = vid_map.get(video_id, {})
+
+            if level == "video":
+                # Video level: satisfied if video matched this OCR query anywhere
+                if not frames_dict:
+                    return 0.0
+                max_sc = max(info["score"] for info in frames_dict.values())
+                total_score += max_sc
+            else:
+                # Frame level: keyframe itself must contain this OCR query (or within proximity window)
+                if keyframe_idx in frames_dict:
+                    total_score += frames_dict[keyframe_idx]["score"]
+                else:
+                    matched_sc = 0.0
+                    for kf, info in frames_dict.items():
+                        if abs(kf - keyframe_idx) <= 150: # ~5s frame window
+                            matched_sc = max(matched_sc, info["score"])
+                    if matched_sc > 0.0:
+                        total_score += matched_sc
+                    else:
+                        return 0.0
+
+        return total_score
+
+    def _get_transcript_filter_ranges(self, audio_query, fuzziness: str = "AUTO") -> dict:
+        """
+        Get transcript filter data for single or multiple audio queries with per-query level ('frame' or 'video').
+        Returns dict with 'common_vids' and 'query_items'.
+        """
+        parsed_queries = []
+        if isinstance(audio_query, str):
+            if audio_query.strip():
+                parsed_queries.append({"text": audio_query.strip(), "level": "frame"})
+        elif isinstance(audio_query, list):
+            for item in audio_query:
+                if isinstance(item, str) and item.strip():
+                    parsed_queries.append({"text": item.strip(), "level": "frame"})
+                elif isinstance(item, dict) and item.get("text", "").strip():
+                    lvl = item.get("level", "frame")
+                    if lvl not in ("frame", "video"):
+                        lvl = "frame"
+                    parsed_queries.append({"text": item["text"].strip(), "level": lvl})
+
+        if not parsed_queries:
+            return {}
+
+        query_items = []
+        for q in parsed_queries:
+            hits = fuzzy_search_transcript(self.es_client, self.es_transcript_index_name,
+                                           q["text"], fuzziness=fuzziness, size=5000)
+            vid_map = {}
+            for h in hits:
+                vid = h["video_id"]
+                if vid not in vid_map:
+                    vid_map[vid] = []
+                vid_map[vid].append({
+                    "start": h["start"],
+                    "end": h["end"],
+                    "text": h.get("text", ""),
+                    "score": h["es_score"]
+                })
+            query_items.append({
+                "text": q["text"],
+                "level": q["level"],
+                "vid_map": vid_map
+            })
+
+        if not query_items:
+            return {}
+
+        # AND Logic: Keep only videos present in ALL per_query_results
+        common_vids = set(query_items[0]["vid_map"].keys())
+        for q_item in query_items[1:]:
+            common_vids &= set(q_item["vid_map"].keys())
+
+        if not common_vids:
+            return {}
+
+        return {
+            "common_vids": common_vids,
+            "query_items": query_items
+        }
+
+    def _get_audio_text_for_frame(self, video_id: str, keyframe_idx: int, transcript_data: dict) -> str:
+        """
+        Get matched audio transcript text snippet for a given keyframe.
+        """
+        if not transcript_data or "query_items" not in transcript_data:
+            return ""
+
         fps = 25.0
         if video_id in self.video_metadata and "fps" in self.video_metadata[video_id]:
             fps = self.video_metadata[video_id]["fps"]
 
         frame_time_sec = keyframe_idx / fps
-        max_score = 0.0
+        texts = []
 
-        for item in transcript_ranges[video_id]:
-            if isinstance(item, dict):
-                s_sec, e_sec, sc = item["start"], item["end"], item["score"]
+        for q_item in transcript_data["query_items"]:
+            vid_map = q_item["vid_map"]
+            ranges = vid_map.get(video_id, [])
+
+            for r in ranges:
+                s_sec, e_sec, txt = r["start"], r["end"], r.get("text", "")
+                if txt and (s_sec - 2.0) <= frame_time_sec <= (e_sec + 2.0):
+                    if txt not in texts:
+                        texts.append(txt)
+                elif txt and q_item["level"] == "video":
+                    if txt not in texts:
+                        texts.append(txt)
+
+        return " | ".join(texts)
+
+    def _frame_in_transcript_ranges(self, video_id: str, keyframe_idx: int, transcript_data: dict) -> float:
+        """
+        Check if a keyframe passes per-query audio filters (AND logic across queries, per-query level).
+        Returns combined score (>0.0) if passed, or 0.0 if failed.
+        """
+        if not transcript_data or "common_vids" not in transcript_data:
+            return 0.0
+
+        if video_id not in transcript_data["common_vids"]:
+            return 0.0
+
+        fps = 25.0
+        if video_id in self.video_metadata and "fps" in self.video_metadata[video_id]:
+            fps = self.video_metadata[video_id]["fps"]
+
+        frame_time_sec = keyframe_idx / fps
+        total_score = 0.0
+
+        for q_item in transcript_data["query_items"]:
+            level = q_item["level"]
+            vid_map = q_item["vid_map"]
+            ranges = vid_map.get(video_id, [])
+
+            if level == "video":
+                # Video level: satisfied for any keyframe in this video
+                scores = [r["score"] for r in ranges]
+                total_score += max(scores) if scores else 1.0
             else:
-                s_sec, e_sec, sc = item[0], item[1], 1.0
+                # Frame level: keyframe must be within +/- 2.0s of audio segment
+                match_score = 0.0
+                for r in ranges:
+                    s_sec, e_sec, sc = r["start"], r["end"], r["score"]
+                    if (s_sec - 2.0) <= frame_time_sec <= (e_sec + 2.0):
+                        if sc > match_score:
+                            match_score = sc
+                if match_score == 0.0:
+                    return 0.0  # Failed this frame-level requirement
+                total_score += match_score
 
-            if (s_sec - 2.0) <= frame_time_sec <= (e_sec + 2.0):
-                if sc > max_score:
-                    max_score = sc
+        return total_score
 
-        return max_score
-
-    def filter_search(self, ocr_query: str = None, audio_query: str = None, objects: list = None,
+    def filter_search(self, ocr_query: str = None, audio_query = None, objects: list = None,
                       group_by_shot: bool = False, score_threshold: float = 0.0, limit: int = 100):
         """
         Perform search purely using metadata filters (OCR, audio transcript, object detection)
@@ -456,23 +632,28 @@ class RetrievalSystem:
             if not transcript_ranges and not ocr_query and not objects:
                 return []
 
+        # 2. Gather OCR ranges if ocr_query is given
+        ocr_ranges = None
+        if ocr_query:
+            ocr_ranges = self._get_ocr_filter_ranges(ocr_query)
+            if not ocr_ranges and not audio_query and not objects:
+                return []
+
         # Map: (video_id, keyframe_idx) -> score
         candidates = {}
 
-        if ocr_query:
+        if ocr_ranges:
             # Case A: OCR query provided
-            ocr_hits = fuzzy_search_ocr(self.es_client, self.es_index_name, ocr_query, size=2000)
-            
-            for hit in ocr_hits:
-                vid = hit["video_id"]
-                kf_idx = hit["keyframe_idx"]
-                ocr_score = hit["es_score"]
-                
-                aud_score = self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges) if transcript_ranges is not None else 1.0
-                if transcript_ranges is not None and aud_score == 0.0:
-                    continue
-
-                candidates[(vid, kf_idx)] = ocr_score + (aud_score if transcript_ranges is not None else 0.0)
+            for vid in ocr_ranges["common_vids"]:
+                # Collect candidate frames for this video
+                for q_item in ocr_ranges["query_items"]:
+                    for kf_idx in q_item["vid_map"].get(vid, {}).keys():
+                        ocr_sc = self._frame_in_ocr_ranges(vid, kf_idx, ocr_ranges)
+                        if ocr_sc > 0.0:
+                            aud_score = self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges) if transcript_ranges is not None else 1.0
+                            if transcript_ranges is not None and aud_score == 0.0:
+                                continue
+                            candidates[(vid, kf_idx)] = ocr_sc + (aud_score if transcript_ranges is not None else 0.0)
 
             # Check object filter if objects present
             if objects and candidates:
@@ -508,7 +689,7 @@ class RetrievalSystem:
                 )
                 points = res
             else:
-                vids = list(transcript_ranges.keys())
+                vids = list(transcript_ranges.get("common_vids", []))
                 if vids:
                     v_filter = Filter(must=[FieldCondition(key="video_id", match=MatchAny(any=vids))])
                     res, _ = self.qdrant_client.scroll(
@@ -544,6 +725,7 @@ class RetrievalSystem:
 
         # Build formatted output results
         results = []
+        ocr_text_map = ocr_ranges.get("combined_ocr_text_map", {}) if ocr_ranges else {}
         for (vid, kf_idx), score in candidates.items():
             if score_threshold > 0 and score < score_threshold and score < 1.0:
                 continue
@@ -563,7 +745,9 @@ class RetrievalSystem:
                 "keyframe_index": kf_idx,
                 "score": score,
                 "shot_start_frame": shot_start,
-                "shot_end_frame": shot_end
+                "shot_end_frame": shot_end,
+                "ocr_text": ocr_text_map.get((vid, kf_idx), ""),
+                "audio_text": self._get_audio_text_for_frame(vid, kf_idx, transcript_ranges)
             })
 
         if group_by_shot:
@@ -595,23 +779,27 @@ class RetrievalSystem:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
 
-    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100, ocr_query: str = None, audio_query: str = None):
-        logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}, ocr_query: '{ocr_query}', audio_query: '{audio_query}'.")
+    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100, ocr_query: str = None, audio_query = None, audio_match_level: str = "frame"):
+        logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}, ocr_query: '{ocr_query}', audio_query: '{audio_query}', match_level: '{audio_match_level}'.")
         
         if not query or not query.strip():
             return self.filter_search(
                 ocr_query=ocr_query,
                 audio_query=audio_query,
+                audio_match_level=audio_match_level,
                 objects=objects,
                 group_by_shot=group_by_shot,
                 score_threshold=score_threshold,
                 limit=limit
             )
         
-        # Build OCR filter set if ocr_query is provided
-        ocr_filter_set = None
+        # Build OCR filter ranges if ocr_query is provided
+        ocr_ranges = None
         if ocr_query:
-            ocr_filter_set = self._get_ocr_filter_set(ocr_query)
+            ocr_ranges = self._get_ocr_filter_ranges(ocr_query)
+            if not ocr_ranges:
+                logger.info(f"No OCR matches for '{ocr_query}'. Returning empty results.")
+                return []
 
         # Build transcript filter ranges if audio_query is provided
         transcript_ranges = None
@@ -676,10 +864,14 @@ class RetrievalSystem:
                 final_scores[point_id] += float(norm_score * weight / total_weight)
                 
         # Apply OCR intersection filter before ranking
-        if ocr_filter_set is not None:
+        if ocr_ranges is not None:
             final_scores = {
                 pid: score for pid, score in final_scores.items()
-                if (all_payloads[pid].get("video_id"), all_payloads[pid].get("keyframe_idx", all_payloads[pid].get("frame_idx"))) in ocr_filter_set
+                if self._frame_in_ocr_ranges(
+                    all_payloads[pid].get("video_id"),
+                    all_payloads[pid].get("keyframe_idx", all_payloads[pid].get("frame_idx", 0)),
+                    ocr_ranges
+                ) > 0.0
             }
             logger.info(f"After OCR filter: {len(final_scores)} results remain.")
 
@@ -691,7 +883,7 @@ class RetrievalSystem:
                     all_payloads[pid].get("video_id"),
                     all_payloads[pid].get("keyframe_idx", all_payloads[pid].get("frame_idx", 0)),
                     transcript_ranges
-                )
+                ) > 0.0
             }
             logger.info(f"After transcript filter: {len(final_scores)} results remain.")
 
@@ -699,6 +891,7 @@ class RetrievalSystem:
         ranked_points = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
         
         results = []
+        ocr_text_map = ocr_ranges.get("combined_ocr_text_map", {}) if ocr_ranges else {}
         for point_id, total_score in ranked_points:
             if total_score < score_threshold:
                 continue
@@ -724,7 +917,9 @@ class RetrievalSystem:
                 "keyframe_index": keyframe_idx,
                 "score": total_score,
                 "shot_start_frame": shot_start,
-                "shot_end_frame": shot_end
+                "shot_end_frame": shot_end,
+                "ocr_text": ocr_text_map.get((video_id, keyframe_idx), ""),
+                "audio_text": self._get_audio_text_for_frame(video_id, keyframe_idx, transcript_ranges)
             })
             
         if group_by_shot:
@@ -755,57 +950,76 @@ class RetrievalSystem:
             
         return results[:limit]
 
-    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.0, limit: int = 100, ocr_query: str = None, audio_query: str = None):
-        logger.info(f"Performing temporal search for {len(queries) if queries else 0} queries with group_by_shot={group_by_shot}")
+    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_video: bool = False, score_threshold: float = 0.0, limit: int = 100, ocr_query = None, audio_query = None, audio_match_level: str = "frame"):
+        logger.info(f"Performing temporal search for {len(queries) if queries else 0} queries with group_by_video={group_by_video}")
         
-        valid_queries = [q.strip() for q in queries if q and q.strip()] if queries else []
-        if not valid_queries:
+        parsed_queries = []
+        if queries:
+            for item in queries:
+                if isinstance(item, str) and item.strip():
+                    parsed_queries.append({"text": item.strip()})
+                elif isinstance(item, dict) and item.get("text", "").strip():
+                    parsed_queries.append(item)
+
+        if not parsed_queries:
             return self.filter_search(
                 ocr_query=ocr_query,
                 audio_query=audio_query,
+                audio_match_level=audio_match_level,
                 objects=objects,
-                group_by_shot=group_by_shot,
+                group_by_shot=False,
                 score_threshold=score_threshold,
                 limit=limit
             )
         
-        # 1. Search each query
+        # 1. Search each query with per-event filters (falling back to global filters)
         query_results = []
-        for q in valid_queries:
-            # We get more than 1000 to ensure we have enough paths, or keep it 1000
-            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=3000, score_threshold=score_threshold, limit=3000, group_by_shot=group_by_shot, ocr_query=ocr_query, audio_query=audio_query)
+        for q in parsed_queries:
+            q_text = q["text"]
+            q_ocr = q.get("ocr") if q.get("ocr") is not None else ocr_query
+            q_audio = q.get("audio") if q.get("audio") is not None else audio_query
+            q_objects = q.get("objects") if q.get("objects") is not None else objects
+
+            res = self.semantic_search(
+                q_text,
+                model_names=model_names,
+                objects=q_objects,
+                top_k=3000,
+                score_threshold=score_threshold,
+                limit=3000,
+                group_by_shot=False,
+                ocr_query=q_ocr,
+                audio_query=q_audio,
+                audio_match_level=audio_match_level
+            )
             query_results.append(res)
             
-        # 2. Group by video
+        # 2. Group candidates by video
         video_grouped = {}
         for q_idx, res_list in enumerate(query_results):
             for item in res_list:
                 vid = item["video_id"]
                 if vid not in video_grouped:
-                    video_grouped[vid] = [[] for _ in range(len(valid_queries))]
+                    video_grouped[vid] = [[] for _ in range(len(parsed_queries))]
                 video_grouped[vid][q_idx].append(item)
                 
-        # 3. Find valid paths via DFS for each video
-        all_sequences = []
+        # 3. Find valid sequence paths via DFS for each video
+        all_sequences_by_video = {}
         
         for vid, vid_group in video_grouped.items():
             # If any query has no results for this video, skip
             if any(len(q_res) == 0 for q_res in vid_group):
                 continue
-            
-            # Items are already aggregated if group_by_shot=True
-            for i in range(len(valid_queries)):
-                if group_by_shot:
-                    vid_group[i].sort(key=lambda x: x["shot_start_frame"])
-                else:
-                    vid_group[i].sort(key=lambda x: x["keyframe_index"])
+            for i in range(len(parsed_queries)):
+                vid_group[i].sort(key=lambda x: x["keyframe_index"])
             vid_group_to_search = vid_group
-            
+
+            vid_seqs = []
             def find_paths(current_q_idx, current_path):
-                if current_q_idx == len(valid_queries):
-                    all_sequences.append(list(current_path))
+                if current_q_idx == len(parsed_queries):
+                    vid_seqs.append(list(current_path))
                     return
-                    
+
                 for candidate in vid_group_to_search[current_q_idx]:
                     if len(current_path) == 0:
                         current_path.append(candidate)
@@ -813,60 +1027,59 @@ class RetrievalSystem:
                         current_path.pop()
                     else:
                         prev = current_path[-1]
-                        valid = False
-                        
-                        if not group_by_shot:
-                            gap = candidate["keyframe_index"] - prev["keyframe_index"]
-                            if 0 < gap <= MAX_FRAME_GAP:
-                                valid = True
-                        else:
-                            # gap between shots logic
-                            if candidate["shot_start_frame"] > prev["shot_end_frame"]:
-                                gap = candidate["shot_start_frame"] - prev["shot_end_frame"]
-                                if gap <= MAX_FRAME_GAP:
-                                    valid = True
-                                    
-                        if valid:
+                        gap = candidate["keyframe_index"] - prev["keyframe_index"]
+                        if 0 < gap <= MAX_FRAME_GAP:
                             current_path.append(candidate)
                             find_paths(current_q_idx + 1, current_path)
                             current_path.pop()
 
             find_paths(0, [])
+            if vid_seqs:
+                all_sequences_by_video[vid] = vid_seqs
             
         # 4. Format output
         final_results = []
-        for seq in all_sequences:
-            avg_score = sum(item["score"] for item in seq) / len(seq)
-            
-            if group_by_shot:
-                flat_frames = []
-                display_frames = []
-                for cand in seq:
-                    sorted_items = sorted(cand["frames"], key=lambda x: x["keyframe_index"])
-                    flat_frames.extend(sorted_items)
-                    # Best frame per shot for card thumbnail
-                    best_frame = max(cand["frames"], key=lambda x: x["score"])
-                    display_frames.append(best_frame)
-                anchor = display_frames[0]
-            else:
-                flat_frames = seq
-                display_frames = seq
-                anchor = seq[0]
-            
-            final_results.append({
-                "video_id": anchor["video_id"],
-                "sequence_score": avg_score,
-                "frames": flat_frames,
-                "display_frames": display_frames,
-                # Include standard fields for compatibility if needed
-                "keyframe_index": anchor["keyframe_index"],
-                "shot_start_frame": anchor.get("shot_start_frame"),
-                "shot_end_frame": anchor.get("shot_end_frame"),
-                "score": avg_score, 
-            })
-            
-        # Sort sequences by avg_score
-        final_results = sorted(final_results, key=lambda x: x["sequence_score"], reverse=True)
+        if group_by_video:
+            for vid, seq_list in all_sequences_by_video.items():
+                scored_seqs = []
+                for seq in seq_list:
+                    seq_score = sum(item["score"] for item in seq) / len(seq)
+                    scored_seqs.append((seq_score, seq))
+                
+                # Điểm video = trung bình cộng điểm số của tất cả các cặp temporal events trong video này
+                video_avg_score = sum(s[0] for s in scored_seqs) / len(scored_seqs)
+                # Cặp có điểm cao nhất để hiển thị đại diện trên card
+                best_score, best_seq = max(scored_seqs, key=lambda x: x[0])
+                
+                anchor = best_seq[0]
+                final_results.append({
+                    "video_id": vid,
+                    "sequence_score": video_avg_score,
+                    "best_sequence_score": best_score,
+                    "frames": best_seq,
+                    "display_frames": best_seq,
+                    "all_sequences_count": len(seq_list),
+                    "keyframe_index": anchor["keyframe_index"],
+                    "score": video_avg_score, 
+                })
+            final_results = sorted(final_results, key=lambda x: x["sequence_score"], reverse=True)
+        else:
+            for vid, seq_list in all_sequences_by_video.items():
+                for seq in seq_list:
+                    avg_score = sum(item["score"] for item in seq) / len(seq)
+                    anchor = seq[0]
+                    final_results.append({
+                        "video_id": vid,
+                        "sequence_score": avg_score,
+                        "best_sequence_score": avg_score,
+                        "frames": seq,
+                        "display_frames": seq,
+                        "all_sequences_count": 1,
+                        "keyframe_index": anchor["keyframe_index"],
+                        "score": avg_score, 
+                    })
+            final_results = sorted(final_results, key=lambda x: x["sequence_score"], reverse=True)
+
         return final_results[:limit]
 
 if __name__ == "__main__":
