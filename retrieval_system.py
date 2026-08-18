@@ -755,7 +755,7 @@ class RetrievalSystem:
             
         return results[:limit]
 
-    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.3, limit: int = 100, ocr_query: str = None, audio_query: str = None):
+    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_shot: bool = False, score_threshold: float = 0.0, limit: int = 100, ocr_query: str = None, audio_query: str = None):
         logger.info(f"Performing temporal search for {len(queries) if queries else 0} queries with group_by_shot={group_by_shot}")
         
         valid_queries = [q.strip() for q in queries if q and q.strip()] if queries else []
@@ -773,7 +773,7 @@ class RetrievalSystem:
         query_results = []
         for q in valid_queries:
             # We get more than 1000 to ensure we have enough paths, or keep it 1000
-            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=2000, score_threshold=score_threshold, group_by_shot=group_by_shot, ocr_query=ocr_query, audio_query=audio_query)
+            res = self.semantic_search(q, model_names=model_names, objects=objects, top_k=3000, score_threshold=score_threshold, limit=3000, group_by_shot=group_by_shot, ocr_query=ocr_query, audio_query=audio_query)
             query_results.append(res)
             
         # 2. Group by video
