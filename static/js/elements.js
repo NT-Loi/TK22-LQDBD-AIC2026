@@ -29,4 +29,7 @@ export const elements = {
   get evalModal() { return document.getElementById("evaluation-modal"); },
   get evalListContainer() { return document.getElementById("evaluation-list"); },
   get cancelEvalBtn() { return document.getElementById("cancel-eval-btn"); },
+  get jumpVideoInput() { return document.getElementById("jump-video-id"); },
+  get jumpKeyframeInput() { return document.getElementById("jump-keyframe-idx"); },
+  get jumpBtn() { return document.getElementById("jump-video-btn"); },
 };

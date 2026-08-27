@@ -208,6 +208,83 @@ async def ocr_search(query: OCRSearchQuery):
     
     return results
 
+@app.get("/api/video_info/{video_id}")
+async def get_video_info(video_id: str):
+    vid = video_id.strip()
+    fps = 25.0
+    if vid in video_metadata and "fps" in video_metadata[vid]:
+        fps = video_metadata[vid]["fps"]
+    
+    video_exists = os.path.exists(f"data/video/{vid}.mp4")
+    return {
+        "video_id": vid,
+        "fps": fps,
+        "exists": video_exists
+    }
+
+@app.get("/api/video_keyframes/{video_id}")
+async def get_video_keyframes(video_id: str):
+    vid = video_id.strip()
+    fps = 25.0
+    if vid in video_metadata and "fps" in video_metadata[vid]:
+        fps = video_metadata[vid]["fps"]
+
+    kf_dir = os.path.join("data", "keyframe", vid)
+    keyframes = []
+    if os.path.exists(kf_dir) and os.path.isdir(kf_dir):
+        for fname in os.listdir(kf_dir):
+            if fname.startswith("keyframe_") and fname.endswith(".webp"):
+                try:
+                    idx = int(fname.replace("keyframe_", "").replace(".webp", ""))
+                    keyframes.append({
+                        "video_id": vid,
+                        "keyframe_index": idx,
+                        "fps": fps
+                    })
+                except ValueError:
+                    pass
+        keyframes.sort(key=lambda x: x["keyframe_index"])
+        
+    return {
+        "video_id": vid,
+        "fps": fps,
+        "keyframes": keyframes
+    }
+
+videos_cache = []
+
+def scan_all_videos():
+    global videos_cache
+    kf_dir = os.path.join("data", "keyframe")
+    videos = []
+    if os.path.exists(kf_dir) and os.path.isdir(kf_dir):
+        for v_name in sorted(os.listdir(kf_dir)):
+            v_path = os.path.join(kf_dir, v_name)
+            if os.path.isdir(v_path):
+                files = [f for f in os.listdir(v_path) if f.endswith(".webp")]
+                fps = 25.0
+                if v_name in video_metadata and "fps" in video_metadata[v_name]:
+                    fps = video_metadata[v_name]["fps"]
+                
+                sorted_files = sorted(files, key=lambda x: int(x.replace("keyframe_", "").replace(".webp", "")) if x.replace("keyframe_", "").replace(".webp", "").isdigit() else 0)
+                first_kf = sorted_files[0] if sorted_files else None
+                
+                videos.append({
+                    "video_id": v_name,
+                    "fps": fps,
+                    "keyframe_count": len(files),
+                    "first_keyframe": first_kf
+                })
+    videos_cache = videos
+    return videos
+
+@app.get("/api/videos")
+async def get_videos():
+    global videos_cache
+    if not videos_cache:
+        scan_all_videos()
+    return {"videos": videos_cache}
+
 @app.post("/api/login")
 async def login(request: Request):
     # Stub login endpoint

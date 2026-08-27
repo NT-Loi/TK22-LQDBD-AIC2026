@@ -2,7 +2,8 @@ import { elements } from "./elements.js";
 import { initFilters, getObjectQueries } from "./filters.js";
 import { searchAPI, loginAPI } from "./api.js";
 import { displayResults } from "./results.js";
-import { initVideoModal } from "./video-player.js";
+import { initVideoModal, openDirectVideo } from "./video-player.js";
+import { initCatalogTab } from "./catalog.js";
 
 let currentResults = [];
 let isGroupShots = false;
@@ -28,7 +29,16 @@ function updateGroupButtonsUI() {
 document.addEventListener("DOMContentLoaded", async () => {
   initFilters();
   initVideoModal();
+  initCatalogTab();
   initDynamicInputs(); // Khởi tạo logic thêm bớt input
+
+  // --- AUTO JUMP FROM URL PARAMS ---
+  const urlParams = new URLSearchParams(window.location.search);
+  const paramVideo = urlParams.get("video");
+  const paramKeyframe = urlParams.get("keyframe");
+  if (paramVideo) {
+    openDirectVideo(paramVideo, paramKeyframe || 0);
+  }
 
   // --- POPULATE MODEL(S) ---
   try {

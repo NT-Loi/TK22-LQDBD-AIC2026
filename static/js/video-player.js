@@ -455,3 +455,61 @@ export function closeModal() {
   elements.modalVideoPlayer.load();
   if (elements.modalShotList) elements.modalShotList.innerHTML = "";
 }
+
+export async function openDirectVideo(videoIdRaw, keyframeIdxRaw) {
+  if (!videoIdRaw) return;
+
+  let videoId = videoIdRaw.trim().toUpperCase();
+  let keyframeIdx = parseInt(keyframeIdxRaw, 10);
+
+  // Smart parsing if user inputs e.g. "L24_V044 / 186" or "L24_V044/186" into the video input
+  if (videoId.includes("/") || videoId.includes(" ")) {
+    const parts = videoId.split(/[\/\s]+/).filter(Boolean);
+    if (parts.length >= 1) videoId = parts[0];
+    if (parts.length >= 2 && isNaN(keyframeIdx)) {
+      keyframeIdx = parseInt(parts[1], 10);
+    }
+  } else if (videoId.includes("_") && isNaN(keyframeIdx)) {
+    const subParts = videoId.split("_");
+    if (subParts.length >= 3) {
+      const lastPart = subParts[subParts.length - 1];
+      if (!isNaN(parseInt(lastPart, 10))) {
+        keyframeIdx = parseInt(lastPart, 10);
+        videoId = subParts.slice(0, -1).join("_");
+      }
+    }
+  }
+
+  if (isNaN(keyframeIdx) || keyframeIdx < 0) {
+    keyframeIdx = 0;
+  }
+
+  try {
+    const newUrl = new URL(window.location.href);
+    newUrl.searchParams.set("video", videoId);
+    newUrl.searchParams.set("keyframe", keyframeIdx);
+    window.history.pushState({}, "", newUrl);
+  } catch (e) {
+    console.warn("Failed to update URL params", e);
+  }
+
+  try {
+    const res = await fetch(`/api/video_keyframes/${encodeURIComponent(videoId)}`);
+    const data = await res.json();
+    const fps = data.fps || 25.0;
+    const keyframes = data.keyframes || [];
+
+    const startTime = Math.max(0, keyframeIdx / fps - 0.5);
+
+    openModal(videoId, startTime, fps, null, keyframeIdx);
+
+    if (keyframes.length > 0) {
+      renderModalSidebar(keyframes, false, keyframeIdx, fps);
+    }
+  } catch (err) {
+    console.error("Error launching direct video jump:", err);
+    const fps = 25.0;
+    const startTime = Math.max(0, keyframeIdx / fps - 0.5);
+    openModal(videoId, startTime, fps, null, keyframeIdx);
+  }
+}

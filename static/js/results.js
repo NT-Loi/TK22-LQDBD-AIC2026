@@ -196,13 +196,15 @@ function displayFlatResults(results) {
     });
     previewContainer.appendChild(previewVideo);
 
+    const fpsStr = typeof item.fps === 'number' ? (Number.isInteger(item.fps) ? item.fps : item.fps.toFixed(2)) : item.fps;
+
     // 2. Nội dung Card
     const infoHTML = `
             <img src="${imageUrl}" class="result-item-image" onerror="this.onerror=null;this.src='/static/placeholder.png';">
             <div class="result-info">
                 <h3>${item.video_id} / ${item.keyframe_index}</h3>
                 <div class="result-scores">
-                    <span>FPS: ${item.fps}</span>
+                    <span>FPS: ${fpsStr}</span>
                     ${["score"]
                       .map((score) => {
                         const val = item[score] ? item[score].toFixed(3) : null;

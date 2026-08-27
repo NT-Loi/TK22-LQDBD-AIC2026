@@ -26,7 +26,10 @@ def generate_video_metadata():
             if cap.isOpened():
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps > 0:
-                    metadata[video_id] = {"fps": fps}
+                    fps_val = round(fps, 3)
+                    if abs(fps_val - round(fps_val)) < 0.005:
+                        fps_val = float(round(fps_val))
+                    metadata[video_id] = {"fps": fps_val}
                 else:
                     metadata[video_id] = {"fps": 25.0} # Fallback
                 cap.release()

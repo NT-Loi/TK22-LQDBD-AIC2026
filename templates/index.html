@@ -5,196 +5,257 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Retrieval - AIC 2026</title>
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css?v=6">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 
 <body>
-  <div class="app-layout">
+  <!-- ═══ TOP NAVBAR HEADER ═══ -->
+  <header class="app-top-header">
+    <div class="header-brand">
+      <span class="header-logo">🎬</span>
+      <h1 class="header-title">AIC 2026 Video Retrieval</h1>
+    </div>
+    <nav class="top-nav-tabs">
+      <button type="button" class="nav-tab-btn active" id="tab-btn-search">
+        <span>🔍 Search Retrieval</span>
+      </button>
+      <button type="button" class="nav-tab-btn" id="tab-btn-catalog">
+        <span>📹 Video Catalog & Browser</span>
+      </button>
+    </nav>
+  </header>
 
-    <!-- ═══ LEFT SIDEBAR — All Query Controls ═══ -->
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-header">
-        <h1 class="sidebar-title">AIC 2026</h1>
-        <button id="login-btn" class="login-btn">Login</button>
-      </div>
+  <!-- ═══ VIEW 1: SEARCH RETRIEVAL ═══ -->
+  <div id="view-search" class="app-view active">
+    <div class="app-layout">
 
-      <form id="search-form" class="sidebar-form">
+      <!-- ═══ LEFT SIDEBAR — All Query Controls ═══ -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <h1 class="sidebar-title">AIC 2026</h1>
+          <button id="login-btn" class="login-btn">Login</button>
+        </div>
 
-        <!-- Text Queries -->
-        <section class="sidebar-section">
-          <label class="section-label">🔍 Text Queries</label>
-          <div id="query-inputs-container">
-            <div class="search-row query-row" data-index="0" style="flex-direction: column; align-items: stretch;">
-              <div style="display: flex; gap: 5px;">
-                <input type="text" name="description_0" class="main-query-input"
-                  placeholder="Event 1 (e.g. Woman in purple)..." autocomplete="off" style="flex: 1;">
-                <button type="button" class="toggle-event-filter-btn" style="background: #238636; color: white; border: none; border-radius: 4px; padding: 0 8px; font-size: 12px; cursor: pointer;" title="Event Sub-filters">⚙️ Filters</button>
-              </div>
-              <div class="event-filter-panel" style="display: none; margin-top: 6px; padding: 6px; background: rgba(255,255,255,0.05); border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
-                <div style="margin-bottom: 4px;">
-                  <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">📝 Event 1 OCR Filter:</label>
-                  <div style="display: flex; gap: 4px;">
-                    <input type="text" class="event-ocr-input sidebar-input" placeholder="OCR for Event 1..." style="font-size: 11px; padding: 4px;">
-                    <select class="event-ocr-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
-                      <option value="frame" selected>Frame</option>
-                      <option value="video">Video</option>
-                    </select>
+        <form id="search-form" class="sidebar-form">
+
+          <!-- Text Queries -->
+          <section class="sidebar-section">
+            <label class="section-label">🔍 Text Queries</label>
+            <div id="query-inputs-container">
+              <div class="search-row query-row" data-index="0" style="flex-direction: column; align-items: stretch;">
+                <div style="display: flex; gap: 5px;">
+                  <input type="text" name="description_0" class="main-query-input"
+                    placeholder="Event 1 (e.g. Woman in purple)..." autocomplete="off" style="flex: 1;">
+                  <button type="button" class="toggle-event-filter-btn" style="background: #238636; color: white; border: none; border-radius: 4px; padding: 0 8px; font-size: 12px; cursor: pointer;" title="Event Sub-filters">⚙️ Filters</button>
+                </div>
+                <div class="event-filter-panel" style="display: none; margin-top: 6px; padding: 6px; background: rgba(255,255,255,0.05); border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
+                  <div style="margin-bottom: 4px;">
+                    <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">📝 Event 1 OCR Filter:</label>
+                    <div style="display: flex; gap: 4px;">
+                      <input type="text" class="event-ocr-input sidebar-input" placeholder="OCR for Event 1..." style="font-size: 11px; padding: 4px;">
+                      <select class="event-ocr-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
+                        <option value="frame" selected>Frame</option>
+                        <option value="video">Video</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">🎙️ Event 1 Audio Filter:</label>
+                    <div style="display: flex; gap: 4px;">
+                      <input type="text" class="event-audio-input sidebar-input" placeholder="Audio for Event 1..." style="font-size: 11px; padding: 4px;">
+                      <select class="event-audio-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
+                        <option value="frame" selected>Frame</option>
+                        <option value="video">Video</option>
+                      </select>
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">🎙️ Event 1 Audio Filter:</label>
-                  <div style="display: flex; gap: 4px;">
-                    <input type="text" class="event-audio-input sidebar-input" placeholder="Audio for Event 1..." style="font-size: 11px; padding: 4px;">
-                    <select class="event-audio-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
-                      <option value="frame" selected>Frame</option>
-                      <option value="video">Video</option>
-                    </select>
-                  </div>
-                </div>
               </div>
             </div>
-          </div>
-          <button type="button" id="add-query-btn" class="btn btn-add">+ Add Event</button>
-        </section>
+            <button type="button" id="add-query-btn" class="btn btn-add">+ Add Event</button>
+          </section>
 
-        <!-- OCR Query -->
-        <section class="sidebar-section">
-          <label class="section-label">📝 OCR Filter</label>
-          <div id="ocr-inputs-container">
-            <div class="search-row ocr-row" data-index="0">
-              <input type="text" name="ocr_0" class="sidebar-input ocr-query-input"
-                placeholder="Text visible on screen..." autocomplete="off">
-              <select name="ocr_level_0" class="sidebar-select-sm ocr-level-select" style="width: 72px; flex-shrink: 0;">
-                <option value="frame" selected>Frame</option>
-                <option value="video">Video</option>
+          <!-- OCR Query -->
+          <section class="sidebar-section">
+            <label class="section-label">📝 OCR Filter</label>
+            <div id="ocr-inputs-container">
+              <div class="search-row ocr-row" data-index="0">
+                <input type="text" name="ocr_0" class="sidebar-input ocr-query-input"
+                  placeholder="Text visible on screen..." autocomplete="off">
+                <select name="ocr_level_0" class="sidebar-select-sm ocr-level-select" style="width: 72px; flex-shrink: 0;">
+                  <option value="frame" selected>Frame</option>
+                  <option value="video">Video</option>
+                </select>
+              </div>
+            </div>
+            <button type="button" id="add-ocr-btn" class="btn btn-add">+ Add OCR Query</button>
+          </section>
+
+          <!-- Audio/Transcript Query -->
+          <section class="sidebar-section">
+            <label class="section-label">🎙️ Audio Transcript Filter</label>
+            <div id="audio-inputs-container">
+              <div class="search-row audio-row" data-index="0">
+                <input type="text" name="audio_0" class="sidebar-input audio-query-input"
+                  placeholder="Spoken words in video..." autocomplete="off">
+                <select name="audio_level_0" class="sidebar-select-sm audio-level-select" style="width: 72px; flex-shrink: 0;">
+                  <option value="frame" selected>Frame</option>
+                  <option value="video">Video</option>
+                </select>
+              </div>
+            </div>
+            <button type="button" id="add-audio-btn" class="btn btn-add">+ Add Audio Query</button>
+          </section>
+
+          <!-- Search Options -->
+          <section class="sidebar-section">
+            <label class="section-label">⚙️ Options</label>
+
+            <div class="option-row">
+              <label class="option-label">Model(s)</label>
+              <select id="models-select" multiple size="3" class="sidebar-select">
+                <option value="all" selected>All</option>
               </select>
             </div>
-          </div>
-          <button type="button" id="add-ocr-btn" class="btn btn-add">+ Add OCR Query</button>
-        </section>
 
-        <!-- Audio/Transcript Query -->
-        <section class="sidebar-section">
-          <label class="section-label">🎙️ Audio Transcript Filter</label>
-          <div id="audio-inputs-container">
-            <div class="search-row audio-row" data-index="0">
-              <input type="text" name="audio_0" class="sidebar-input audio-query-input"
-                placeholder="Spoken words in video..." autocomplete="off">
-              <select name="audio_level_0" class="sidebar-select-sm audio-level-select" style="width: 72px; flex-shrink: 0;">
-                <option value="frame" selected>Frame</option>
-                <option value="video">Video</option>
+            <div class="option-row">
+              <label class="option-label">Score Threshold</label>
+              <input type="number" id="score-threshold" value="0.0" step="0.05" min="0" max="1" class="sidebar-input-sm">
+            </div>
+
+            <div class="option-row">
+              <label class="option-label">Result Limit</label>
+              <input type="number" id="result-limit" value="100" min="1" max="10000" class="sidebar-input-sm">
+            </div>
+          </section>
+
+          <!-- Object Detection Filter -->
+          <section class="sidebar-section">
+            <label class="section-label">📦 Object Filter</label>
+            <div class="object-controls">
+              <select id="object-select" class="sidebar-select-sm">
+                <option value="person" selected>person</option>
+                <option value="airplane">airplane</option>
+                <option value="bag">bag</option>
+                <option value="banana">banana</option>
+                <option value="basket">basket</option>
+                <option value="bench">bench</option>
+                <option value="bicycle">bicycle</option>
+                <option value="bird">bird</option>
+                <option value="boat">boat</option>
+                <option value="book">book</option>
+                <option value="bowl">bowl</option>
+                <option value="box">box</option>
+                <option value="bridge">bridge</option>
+                <option value="building">building</option>
+                <option value="bus">bus</option>
+                <option value="camera">camera</option>
+                <option value="car">car</option>
+                <option value="cat">cat</option>
+                <option value="chair">chair</option>
+                <option value="computer">computer</option>
+                <option value="cow">cow</option>
+                <option value="cup">cup</option>
+                <option value="dog">dog</option>
+                <option value="door">door</option>
+                <option value="dress">dress</option>
+                <option value="fence">fence</option>
+                <option value="fish">fish</option>
+                <option value="flower">flower</option>
+                <option value="glasses">glasses</option>
+                <option value="hat">hat</option>
+                <option value="helmet">helmet</option>
+                <option value="horse">horse</option>
+                <option value="house">house</option>
+                <option value="knife">knife</option>
+                <option value="motorcycle">motorcycle</option>
+                <option value="phone">phone</option>
+                <option value="plate">plate</option>
+                <option value="pot">pot</option>
+                <option value="screen">screen</option>
+                <option value="shirt">shirt</option>
+                <option value="shoes">shoes</option>
+                <option value="table">table</option>
+                <option value="traffic light">traffic light</option>
+                <option value="traffic sign">traffic sign</option>
+                <option value="tree">tree</option>
+                <option value="truck">truck</option>
+                <option value="umbrella">umbrella</option>
+                <option value="watch">watch</option>
               </select>
+              <div class="object-nums">
+                <input type="number" id="object-confidence" value="0.7" step="0.1" max="1" placeholder="Conf" class="sidebar-input-xs">
+                <input type="number" id="object-min" value="1" min="1" placeholder="Min" class="sidebar-input-xs">
+                <input type="number" id="object-max" value="" max="10000" placeholder="Max" class="sidebar-input-xs">
+                <button type="button" id="add-object-btn" class="btn btn-obj-add">+</button>
+              </div>
             </div>
+            <div id="object-list" class="object-list"></div>
+          </section>
+
+          <!-- Search Button -->
+          <button type="submit" id="search-btn" class="btn btn-search">🔎 Search</button>
+        </form>
+      </aside>
+
+      <!-- ═══ RIGHT — Results Area ═══ -->
+      <main class="results-area">
+        <div class="results-header">
+          <span id="results-count" class="results-count">Results: 0</span>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" id="toggle-group-shots-btn" class="btn btn-toggle-shots">Group Shots: OFF</button>
+            <button type="button" id="toggle-group-video-btn" class="btn btn-toggle-shots">Group Video: OFF</button>
           </div>
-          <button type="button" id="add-audio-btn" class="btn btn-add">+ Add Audio Query</button>
-        </section>
+        </div>
+        <div id="results-container">
+          <p class="placeholder">Enter queries on the left panel and click Search.</p>
+        </div>
+      </main>
 
-        <!-- Search Options -->
-        <section class="sidebar-section">
-          <label class="section-label">⚙️ Options</label>
+    </div>
+  </div>
 
-          <div class="option-row">
-            <label class="option-label">Model(s)</label>
-            <select id="models-select" multiple size="3" class="sidebar-select">
-              <option value="all" selected>All</option>
-            </select>
-          </div>
-
-          <div class="option-row">
-            <label class="option-label">Score Threshold</label>
-            <input type="number" id="score-threshold" value="0.0" step="0.05" min="0" max="1" class="sidebar-input-sm">
-          </div>
-
-          <div class="option-row">
-            <label class="option-label">Result Limit</label>
-            <input type="number" id="result-limit" value="100" min="1" max="10000" class="sidebar-input-sm">
-          </div>
-        </section>
-
-        <!-- Object Detection Filter -->
-        <section class="sidebar-section">
-          <label class="section-label">📦 Object Filter</label>
-          <div class="object-controls">
-            <select id="object-select" class="sidebar-select-sm">
-              <option value="person" selected>person</option>
-              <option value="airplane">airplane</option>
-              <option value="bag">bag</option>
-              <option value="banana">banana</option>
-              <option value="basket">basket</option>
-              <option value="bench">bench</option>
-              <option value="bicycle">bicycle</option>
-              <option value="bird">bird</option>
-              <option value="boat">boat</option>
-              <option value="book">book</option>
-              <option value="bowl">bowl</option>
-              <option value="box">box</option>
-              <option value="bridge">bridge</option>
-              <option value="building">building</option>
-              <option value="bus">bus</option>
-              <option value="camera">camera</option>
-              <option value="car">car</option>
-              <option value="cat">cat</option>
-              <option value="chair">chair</option>
-              <option value="computer">computer</option>
-              <option value="cow">cow</option>
-              <option value="cup">cup</option>
-              <option value="dog">dog</option>
-              <option value="door">door</option>
-              <option value="dress">dress</option>
-              <option value="fence">fence</option>
-              <option value="fish">fish</option>
-              <option value="flower">flower</option>
-              <option value="glasses">glasses</option>
-              <option value="hat">hat</option>
-              <option value="helmet">helmet</option>
-              <option value="horse">horse</option>
-              <option value="house">house</option>
-              <option value="knife">knife</option>
-              <option value="motorcycle">motorcycle</option>
-              <option value="phone">phone</option>
-              <option value="plate">plate</option>
-              <option value="pot">pot</option>
-              <option value="screen">screen</option>
-              <option value="shirt">shirt</option>
-              <option value="shoes">shoes</option>
-              <option value="table">table</option>
-              <option value="traffic light">traffic light</option>
-              <option value="traffic sign">traffic sign</option>
-              <option value="tree">tree</option>
-              <option value="truck">truck</option>
-              <option value="umbrella">umbrella</option>
-              <option value="watch">watch</option>
-            </select>
-            <div class="object-nums">
-              <input type="number" id="object-confidence" value="0.7" step="0.1" max="1" placeholder="Conf" class="sidebar-input-xs">
-              <input type="number" id="object-min" value="1" min="1" placeholder="Min" class="sidebar-input-xs">
-              <input type="number" id="object-max" value="" max="10000" placeholder="Max" class="sidebar-input-xs">
-              <button type="button" id="add-object-btn" class="btn btn-obj-add">+</button>
-            </div>
-          </div>
-          <div id="object-list" class="object-list"></div>
-        </section>
-
-        <!-- Search Button -->
-        <button type="submit" id="search-btn" class="btn btn-search">🔎 Search</button>
-      </form>
-    </aside>
-
-    <!-- ═══ RIGHT — Results Area ═══ -->
-    <main class="results-area">
-      <div class="results-header">
-        <span id="results-count" class="results-count">Results: 0</span>
-        <div style="display: flex; gap: 8px;">
-          <button type="button" id="toggle-group-shots-btn" class="btn btn-toggle-shots">Group Shots: OFF</button>
-          <button type="button" id="toggle-group-video-btn" class="btn btn-toggle-shots">Group Video: OFF</button>
+  <!-- ═══ VIEW 2: VIDEO CATALOG & BROWSER ═══ -->
+  <div id="view-catalog" class="app-view hidden">
+    <div class="catalog-layout">
+      <div class="catalog-header-bar">
+        <div class="catalog-search-group">
+          <input type="text" id="catalog-video-search" class="catalog-input" placeholder="🔍 Search Video ID (e.g. L24, K01, L24_V044...)" autocomplete="off">
+          <button type="button" id="catalog-jump-btn" class="btn-search-sm">🔍 Search</button>
+        </div>
+        <div class="catalog-stats">
+          <span id="catalog-total-videos" class="catalog-badge">Total Videos: 0</span>
         </div>
       </div>
-      <div id="results-container">
-        <p class="placeholder">Enter queries on the left panel and click Search.</p>
-      </div>
-    </main>
 
+      <div class="catalog-content-split">
+        <!-- Left Pane: Video Cards List -->
+        <div class="catalog-video-pane">
+          <h3 class="pane-title">Video Library</h3>
+          <div id="catalog-video-list" class="catalog-video-grid">
+            <!-- Rendered dynamically via JS -->
+          </div>
+        </div>
+
+        <!-- Right Pane: Keyframe Gallery for Selected Video -->
+        <div class="catalog-gallery-pane">
+          <div class="gallery-header-bar">
+            <div class="gallery-title-group">
+              <h3 id="gallery-video-name">Select a video to browse keyframes</h3>
+              <span id="gallery-video-info" class="gallery-info-badge"></span>
+            </div>
+            <div class="gallery-controls">
+              <input type="text" id="gallery-frame-filter" class="catalog-input-xs" placeholder="Filter frame #..." autocomplete="off">
+              <button type="button" id="gallery-play-btn" class="btn-play-sm hidden">▶ Play Video</button>
+            </div>
+          </div>
+          <div id="catalog-keyframe-grid" class="catalog-keyframe-grid">
+            <p class="placeholder">Click any video on the left to view all its keyframe frames.</p>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <button id="scroll-top-btn" title="Press Space to scroll top">▲</button>
@@ -230,7 +291,7 @@
     </div>
   </div>
 
-  <script type="module" src="/static/js/main.js?v=5"></script>
+  <script type="module" src="/static/js/main.js?v=7"></script>
 </body>
 
 </html>
