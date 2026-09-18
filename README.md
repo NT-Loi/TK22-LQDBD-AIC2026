@@ -88,12 +88,17 @@ uv run python -m data_processor.caption --video_id L21_V001 --max_shots 5 --over
 uv run python -m data_processor.caption --video_id L21_V001 --concurrency 5
 ```
 
-#### C. Batch Process All Videos in Dataset
+#### C. Batch Process by Prefix (e.g. all L21 videos)
+```bash
+uv run python -m data_processor.caption --prefix L21 --concurrency 5
+```
+
+#### D. Batch Process All Videos in Dataset
 ```bash
 uv run python -m data_processor.caption --all --concurrency 5
 ```
 
-#### D. Smart Resume Capability
+#### E. Smart Resume Capability
 The generator automatically tracks already captioned shots. If a batch run is stopped or interrupted:
 - Re-running the command automatically detects cached shots and **only processes the remaining uncaptioned shots**.
 - Use `--overwrite` if you want to regenerate all shots from scratch.
@@ -102,6 +107,7 @@ The generator automatically tracks already captioned shots. If a batch run is st
 | Flag | Type | Description |
 | :--- | :--- | :--- |
 | `--video_id <ID>` | `str` | Process a single video (e.g. `L21_V001`). |
+| `--prefix <PREFIX>` | `str` | Filter video IDs starting with a prefix (e.g. `L21`). |
 | `--all` | `flag` | Batch process all videos found in `data/shot/` and `data/keyframe/`. |
 | `--max_videos <N>` | `int` | Limit the total number of videos to process. |
 | `--max_shots <N>` | `int` | Limit shots per video (convenient for testing). |

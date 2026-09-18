@@ -367,6 +367,7 @@ class ShotCaptionGenerator:
     async def process_all_videos(
         self,
         video_ids: Optional[List[str]] = None,
+        prefix: Optional[str] = None,
         overwrite: bool = False,
         max_shots_per_video: Optional[int] = None,
         limit_videos: Optional[int] = None,
@@ -378,10 +379,13 @@ class ShotCaptionGenerator:
             }
             video_ids = sorted(list(set(self.shots_data.keys()).intersection(all_kf_videos)))
 
+        if prefix:
+            video_ids = [vid for vid in video_ids if vid.startswith(prefix)]
+
         if limit_videos and limit_videos > 0:
             video_ids = video_ids[:limit_videos]
 
-        logger.info(f"Starting batch caption generation for {len(video_ids)} videos...")
+        logger.info(f"Starting batch caption generation for {len(video_ids)} videos" + (f" (prefix: '{prefix}')" if prefix else "") + "...")
 
         for vid in tqdm(video_ids, desc="🎥 Videos", unit="video"):
             try:
@@ -398,6 +402,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Multi-Aspect Video Shot Caption Generator")
     parser.add_argument("--video_id", type=str, default=None, help="Process a single video ID (e.g. L21_V001)")
+    parser.add_argument("--prefix", type=str, default=None, help="Filter video IDs starting with prefix (e.g. L21)")
     parser.add_argument("--all", action="store_true", help="Process all videos in data/")
     parser.add_argument("--max_videos", type=int, default=None, help="Limit number of videos to process")
     parser.add_argument("--max_shots", type=int, default=None, help="Limit number of shots per video (for testing)")
@@ -420,14 +425,16 @@ def main():
                 max_shots=args.max_shots
             )
         )
-    elif args.all:
+    elif args.prefix or args.all:
         asyncio.run(
             generator.process_all_videos(
+                prefix=args.prefix,
                 overwrite=args.overwrite,
                 max_shots_per_video=args.max_shots,
                 limit_videos=args.max_videos
             )
         )
+
     else:
         # Default test: run 1 shot of L21_V001 to verify
         test_video = "L21_V001"
