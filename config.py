@@ -9,6 +9,8 @@ ES_INDEX_NAME = "ocr_frames"
 OCR_SOURCES = ["V6", "VL1.6"]
 
 ES_TRANSCRIPT_INDEX_NAME = "transcript_segments"
+CAPTION_DIR = "data/caption"
+ES_CAPTION_INDEX_NAME = "shot_captions"
 
 VECTOR_SIZES = {
         # "CLIP_H14": 1024,

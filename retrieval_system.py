@@ -1,4 +1,3 @@
-from data_processor.text_encoder import TextEncoder
 import logging
 import sys
 
@@ -1046,9 +1045,9 @@ class RetrievalSystem:
                     seq_score = sum(item["score"] for item in seq) / len(seq)
                     scored_seqs.append((seq_score, seq))
                 
-                # Điểm video = trung bình cộng điểm số của tất cả các cặp temporal events trong video này
+                # Video score = average of all temporal event pair scores in this video
                 video_avg_score = sum(s[0] for s in scored_seqs) / len(scored_seqs)
-                # Cặp có điểm cao nhất để hiển thị đại diện trên card
+                # Best pair selected for card display
                 best_score, best_seq = max(scored_seqs, key=lambda x: x[0])
                 
                 anchor = best_seq[0]

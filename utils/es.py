@@ -227,8 +227,6 @@ def fuzzy_search_ocr(es_client: Elasticsearch, index_name: str, query: str,
     results.sort(key=lambda x: x["es_score"], reverse=True)
     return results
 
-    return results
-
 
 # ─── Transcript (Whisper) ES functions ──────────────────────────────────────
 

@@ -1,5 +1,5 @@
 .venv
-
+.env
 __pycache__
 
 query-p1-groupA
@@ -9,3 +9,9 @@ es_data
 
 *.log
 .*
+!.gitignore
+!.env.example
+
+technical_report
+
+sample_queries
