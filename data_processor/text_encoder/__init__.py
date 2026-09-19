@@ -13,6 +13,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+hf_token = os.getenv("HF_TOKEN", None)
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -118,7 +123,6 @@ class SigLIP2TextEncoder(TextEncoder):
             
         return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32) 
 
-
 class Qwen3VLTextEncoder(TextEncoder):
     def __init__(self, device: str = None, model_id: str = "Qwen/Qwen3-VL-Embedding-2B"):
         super().__init__(device)
@@ -127,7 +131,8 @@ class Qwen3VLTextEncoder(TextEncoder):
         from transformers import AutoProcessor, AutoModel
         self.model = AutoModel.from_pretrained(
             model_id,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            token=hf_token
         )
 
         # Delete image encoder to save VRAM (text-only query encoder)
@@ -169,12 +174,8 @@ class Qwen3VLTextEncoder(TextEncoder):
 
         return F.normalize(text_features.float(), p=2, dim=-1).detach().numpy().astype(np.float32)
 
-
-Qwen3VLEmbeddingTextEncoder = Qwen3VLTextEncoder
-
-
 if __name__ == "__main__":
-    encoder = SigLIP2TextEncoder()
+    encoder = Qwen3VLTextEncoder()
     sample_text = "A person riding a horse on a beach."
     features = encoder(sample_text)
     print("Features:", features)
