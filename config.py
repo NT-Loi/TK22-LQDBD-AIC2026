@@ -16,12 +16,14 @@ VECTOR_SIZES = {
         # "CLIP_H14": 1024,
         "SigLIP": 1152,
         "SigLIP2": 1536,
+        "Qwen3_VL": 2048,
     }
 
 EMBEDDING_WEIGHTS = {
         # "CLIP_H14": 1.0,
         "SigLIP": 1.0,
         "SigLIP2": 1.0,
+        "Qwen3_VL": 1.0,
     }
 
 MAX_FRAME_GAP = 2000
