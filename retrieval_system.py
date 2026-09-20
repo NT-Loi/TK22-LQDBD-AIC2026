@@ -73,7 +73,7 @@ class RetrievalSystem:
             if model_name == "SigLIP2":
                 self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
 
-            if model_name in ["FGCLIP2", "FG_CLIP2"]:
+            if model_name == "FGCLIP2":
                 self.text_encoders[model_name] = FGCLIP2TextEncoder(device=self.device)
         # Load shot boundaries
         self.shots_data = {}
