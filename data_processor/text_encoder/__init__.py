@@ -117,10 +117,72 @@ class SigLIP2TextEncoder(TextEncoder):
             
         return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32) 
 
+class FGCLIP2TextEncoder(TextEncoder):
+    def __init__(self, device: str = None, model_id: str = "qihoo360/fg-clip2-so400m"):
+        super().__init__(device)
+
+        logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
+        from transformers import AutoModelForCausalLM, AutoModel, AutoTokenizer
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True)
+        except Exception:
+            self.model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
+
+        if hasattr(self.model, "vision_model"):
+            del self.model.vision_model
+
+        # Ensure embedding masks are properly initialized (avoiding meta tensor issues on load)
+        if hasattr(self.model, "text_model") and hasattr(self.model.text_model, "embeddings"):
+            embeddings = self.model.text_model.embeddings
+            longtext_len = getattr(self.model.config.text_config, "longtext_len", 196) if hasattr(self.model.config, "text_config") else 196
+            keep_len = getattr(self.model.config.text_config, "keep_len", 64) if hasattr(self.model.config, "text_config") else 64
+
+            if hasattr(embeddings, "mask1") and embeddings.mask1.is_meta:
+                mask1 = torch.zeros([longtext_len, 1])
+                mask1[:keep_len, :] = 1
+                embeddings.mask1 = mask1
+
+            if hasattr(embeddings, "mask2") and embeddings.mask2.is_meta:
+                mask2 = torch.zeros([longtext_len, 1])
+                mask2[keep_len:, :] = 1
+                embeddings.mask2 = mask2
+
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+
+        logger.info("FGCLIP2TextEncoder initialized successfully.")
+
+    def forward(self, query: str, walk_type: str = "short"):
+        max_len = 196 if walk_type == "long" else 64
+        inputs = self.tokenizer(
+            [query],
+            padding="max_length",
+            max_length=max_len,
+            truncation=True,
+            return_tensors="pt"
+        ).to(self.device)
+
+        seq_len = inputs["input_ids"].shape[-1]
+        position_ids = torch.arange(seq_len, dtype=torch.long, device=self.device).unsqueeze(0)
+
+        with torch.no_grad():
+            try:
+                out = self.model.get_text_features(**inputs, position_ids=position_ids, walk_type=walk_type)
+            except TypeError:
+                out = self.model.get_text_features(**inputs, position_ids=position_ids)
+            text_features = out.pooler_output if hasattr(out, "pooler_output") else out
+
+        if self.device == "cuda":
+            text_features = text_features.cpu()
+            
+        return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32)
+
 
 if __name__ == "__main__":
-    encoder = SigLIP2TextEncoder()
+    encoder = FGCLIP2TextEncoder()
     sample_text = "A person riding a horse on a beach."
     features = encoder(sample_text)
     print("Features:", features)
     print(features.shape)
+
