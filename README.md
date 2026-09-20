@@ -26,6 +26,7 @@ Ensure your `data/` directory is structured as follows at the root of the projec
 ```text
 data/
 ├── embedding/                  # Pre-extracted visual embedding .pt files
+│   ├── FGCLIP2/                # e.g., FGCLIP2 embeddings
 │   ├── SigLIP/                 # e.g., SigLIP embeddings
 │   └── SigLIP2/                # e.g., SigLIP2 embeddings
 ├── keyframe/                   # Extracted keyframe WebP images
