@@ -72,8 +72,12 @@ class RetrievalSystem:
             if model_name == "SigLIP2":
                 self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
 
-            if model_name == "Qwen3_VL":
-                self.text_encoders[model_name] = Qwen3VLTextEncoder(device=self.device)
+            if model_name == "Qwen3_VL_Embedding":
+                self.text_encoders[model_name] = Qwen3VLEmbeddingTextEncoder(device=self.device)
+
+            if model_name == "FG_CLIP2":
+                self.text_encoders[model_name] = FGCLIP2TextEncoder(device=self.device)
+
         # Load shot boundaries
         self.shots_data = {}
         self._load_shots()
