@@ -1,6 +1,9 @@
 .venv
 .env
-__pycache__
+__pycache__/
+**/__pycache__/**
+*.py[cod]
+*$py.class
 
 query-p1-groupA
 data
@@ -11,6 +14,8 @@ es_data
 .*
 !.gitignore
 !.env.example
+!.agents/
+!.agents/**
 
 technical_report
 
