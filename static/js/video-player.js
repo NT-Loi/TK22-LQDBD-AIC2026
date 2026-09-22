@@ -122,7 +122,7 @@ export function openModal(
   elements.modalOverlay.classList.remove("hidden");
 
   // --- 1. SETUP PLAYER ---
-  const videoUrl = `/video/${videoId}.mp4`;
+  const videoUrl = `/video/${videoId}`;
   let mainHls = null;
   elements.modalVideoPlayer.src = videoUrl;
   elements.modalVideoPlayer.addEventListener(

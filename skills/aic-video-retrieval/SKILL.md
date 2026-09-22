@@ -36,7 +36,7 @@ All paths are relative to the workspace root:
   - Contains 7 structured aspects in Vietnamese (`[GÓC NHÌN & CỠ CẢNH]`, `[CHỦ THỂ & HÀNH ĐỘNG]`, `[VẬT THỂ & ĐẶC ĐIỂM TRỰC QUAN]`, `[BỐI CẢNH & KHÔNG GIAN]`, `[CHỮ, LOGO & MÀN HÌNH]`, `[DIỄN BIẾN THEO THỜI GIAN]`, `[TỔNG THỂ CẢNH QUAY]`).
 - **Video Metadata (FPS & Timestamps):** `data/video_metadata.json`
 - **Shot Boundaries:** `data/shot/all_scenes_<prefix>.json`
-- **Raw Video Files:** `data/video/<video_id>.mp4`
+- **Raw Video Files:** `data/video/<video_id>.[mp4|mov]`
 
 ---
 

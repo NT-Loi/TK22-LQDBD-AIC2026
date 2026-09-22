@@ -1,7 +1,8 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, Union
 import uvicorn
@@ -10,10 +11,28 @@ from contextlib import asynccontextmanager
 
 from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
-from config import VECTOR_SIZES
+from config import VISION_EMBEDDING_DIM
 
 system = None
 video_metadata = {}
+
+SUPPORTED_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+def get_safe_video_path(video_name: str) -> Optional[str]:
+    """Resolves video path securely, matching either exact file or base ID with supported extensions."""
+    video_dir = os.path.abspath("data/video")
+    # Check exact file request
+    direct_path = os.path.abspath(os.path.join(video_dir, video_name))
+    if os.path.commonpath([video_dir, direct_path]) == video_dir and os.path.isfile(direct_path):
+        return direct_path
+
+    # Check without extension or with alternative extensions (.mp4, .mov, etc.)
+    base_id = os.path.splitext(os.path.basename(video_name))[0]
+    for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV"):
+        cand = os.path.join(video_dir, f"{base_id}{ext}")
+        if os.path.isfile(cand):
+            return cand
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,13 +54,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Ensure media directories exist to prevent StaticFiles from crashing
+# Ensure media directories exist to prevent errors
 os.makedirs("data/video", exist_ok=True)
 os.makedirs("data/keyframe", exist_ok=True)
 
-# Mount static and media directories
+# Video serving endpoint supporting both .mp4 and .mov with range requests
+@app.get("/video/{video_name:path}")
+async def serve_video(video_name: str):
+    file_path = get_safe_video_path(video_name)
+    if not file_path:
+        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found")
+    media_type = "video/mp4" if file_path.lower().endswith((".mp4", ".mov")) else None
+    return FileResponse(file_path, media_type=media_type)
+
+# Mount static and keyframe directories
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/video", StaticFiles(directory="data/video"), name="video")
 app.mount("/keyframes", StaticFiles(directory="data/keyframe"), name="keyframes")
 
 templates = Jinja2Templates(directory="templates")
@@ -67,7 +94,7 @@ async def index(request: Request):
 @app.get("/api/models")
 async def get_models():
     # Return available model filters
-    models = ["score"] + list(VECTOR_SIZES.keys())
+    models = ["score"] + list(VISION_EMBEDDING_DIM.keys())
     return {"models": models}
 
 @app.post("/search")
@@ -210,24 +237,30 @@ async def ocr_search(query: OCRSearchQuery):
 
 @app.get("/api/video_info/{video_id}")
 async def get_video_info(video_id: str):
-    vid = video_id.strip()
+    raw_vid = video_id.strip()
+    base_vid = os.path.splitext(raw_vid)[0]
     fps = 25.0
-    if vid in video_metadata and "fps" in video_metadata[vid]:
-        fps = video_metadata[vid]["fps"]
+    for key in (base_vid, raw_vid):
+        if key in video_metadata and "fps" in video_metadata[key]:
+            fps = video_metadata[key]["fps"]
+            break
     
-    video_exists = os.path.exists(f"data/video/{vid}.mp4")
+    video_path = get_safe_video_path(raw_vid)
     return {
-        "video_id": vid,
+        "video_id": base_vid,
         "fps": fps,
-        "exists": video_exists
+        "exists": video_path is not None
     }
 
 @app.get("/api/video_keyframes/{video_id}")
 async def get_video_keyframes(video_id: str):
-    vid = video_id.strip()
+    raw_vid = video_id.strip()
+    vid = os.path.splitext(raw_vid)[0]
     fps = 25.0
-    if vid in video_metadata and "fps" in video_metadata[vid]:
-        fps = video_metadata[vid]["fps"]
+    for key in (vid, raw_vid):
+        if key in video_metadata and "fps" in video_metadata[key]:
+            fps = video_metadata[key]["fps"]
+            break
 
     kf_dir = os.path.join("data", "keyframe", vid)
     keyframes = []

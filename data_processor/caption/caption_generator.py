@@ -89,7 +89,7 @@ class ShotCaptionGenerator:
         return shots_map
 
     def _get_video_fps(self, video_id: str) -> float:
-        for key in (f"{video_id}.mp4", video_id):
+        for key in (video_id, f"{video_id}.mp4", f"{video_id}.mov"):
             if key in self.metadata and "fps" in self.metadata[key]:
                 return float(self.metadata[key]["fps"])
         return 25.0

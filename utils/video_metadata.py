@@ -8,19 +8,34 @@ logger = logging.getLogger(__name__)
 METADATA_PATH = "data/video_metadata.json"
 VIDEO_DIR = "data/video"
 
-def generate_video_metadata():
-    """Scans the video directory to extract FPS for each video and saves it to a JSON file."""
+SUPPORTED_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+def generate_video_metadata(force_rescan: bool = False):
+    """Scans the video directory to extract FPS for each video (.mp4, .mov, etc.) and saves it to a JSON file."""
     if not os.path.exists(VIDEO_DIR):
         logger.warning(f"Video directory {VIDEO_DIR} does not exist.")
         return {}
         
     metadata = {}
-    logger.info(f"Scanning videos in {VIDEO_DIR} to generate metadata...")
+    if not force_rescan and os.path.exists(METADATA_PATH):
+        try:
+            with open(METADATA_PATH, "r") as f:
+                metadata = json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read existing {METADATA_PATH}, will rescan all: {e}")
+            metadata = {}
+
+    logger.info(f"Scanning videos in {VIDEO_DIR} to generate/update metadata...")
+    scanned_count = 0
     
-    for filename in os.listdir(VIDEO_DIR):
-        if filename.endswith(".mp4"):
-            video_id = filename.split(".")[0]
+    for filename in sorted(os.listdir(VIDEO_DIR)):
+        if filename.lower().endswith(SUPPORTED_VIDEO_EXTS):
+            video_id = os.path.splitext(filename)[0]
+            if video_id in metadata and not force_rescan:
+                continue
+
             video_path = os.path.join(VIDEO_DIR, filename)
+            scanned_count += 1
             
             cap = cv2.VideoCapture(video_path)
             if cap.isOpened():
@@ -42,7 +57,7 @@ def generate_video_metadata():
     with open(METADATA_PATH, "w") as f:
         json.dump(metadata, f, indent=4)
         
-    logger.info(f"Successfully generated metadata for {len(metadata)} videos.")
+    logger.info(f"Successfully generated/updated metadata. Total videos: {len(metadata)} (newly scanned: {scanned_count}).")
     return metadata
 
 def load_video_metadata():

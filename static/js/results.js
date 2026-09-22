@@ -285,7 +285,7 @@ function setupHoverPreview(element, videoEl, item) {
       const videoId = item.video_id;
       const fps = item.fps || 25;
       const startTime = Math.max(0, item.keyframe_index / fps - 1.0); // Preview trước 1s
-      const videoUrl = `/video/${videoId}.mp4`;
+      const videoUrl = `/video/${videoId}`;
 
       // Lắng nghe sự kiện timeupdate hoặc playing để hiện video
       // timeupdate > 0 nghĩa là frame đã chạy, đảm bảo không bị màn hình đen
