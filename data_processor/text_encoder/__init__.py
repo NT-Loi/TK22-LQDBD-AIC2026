@@ -108,8 +108,6 @@ class SigLIP2TextEncoder(TextEncoder):
         self.model = self.model.to(self.device)
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_id)
-        print(self.processor.tokenizer)
-        print(type(self.processor.tokenizer))
         logger.info("SigLIP2TextEncoder initialized successfully.")
 
     def forward(self, query: str):

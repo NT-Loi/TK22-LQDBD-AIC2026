@@ -16,16 +16,15 @@ import torch
 import uuid
 from tqdm import tqdm
 from pathlib import Path
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams
 from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
 
-from config import DATA_DIR, QDRANT_HOST_URL, ES_HOST_URL, ES_INDEX_NAME, ES_TRANSCRIPT_INDEX_NAME, QDRANT_COLLECTION_NAME, VECTOR_SIZES, EMBEDDING_WEIGHTS, MAX_FRAME_GAP, OCR_SOURCES
-from utils import (setup_qdrant_collection, setup_es_index, ingest_ocr_to_es, fuzzy_search_ocr,
-                   setup_transcript_index, ingest_transcript_to_es, fuzzy_search_transcript)
+from config import *
+from utils import *
 from utils.video_metadata import load_video_metadata
 import json
 import bisect
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class RetrievalSystem:
-    def __init__(self, data_dir: str=DATA_DIR, device=None, re_ingest: bool=False):
+    def __init__(self, data_dir: str=DATA_DIR, device=None, re_ingest: bool=False, init_text_encoders: bool=True):
         logger.info("Initializing Video Retrieval System...")
 
         # auto use gpu
@@ -43,16 +42,23 @@ class RetrievalSystem:
         self.device = device
 
         self.data_dir = Path(data_dir)
-        self.embedding_dir = self.data_dir / "embedding"
+        self.vision_embedding_dir = self.data_dir / "embedding"
+        self.caption_dir = self.data_dir / "caption"
+        self.caption_embedding_dir = self.data_dir / "caption_embedding"
+        self.shot_dir = self.data_dir / "shot"
+        self.obj_dir = self.data_dir / "object_detection"
+        self.ocr_dir = self.data_dir / "ocr"
+        self.transcript_dir = self.data_dir / "transcript"
 
-        self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL, timeout=60.0)
-        self.qdrant_collection_name = QDRANT_COLLECTION_NAME
-        if not self.qdrant_client.collection_exists(self.qdrant_collection_name):
-            logger.warning(f"Qdrant collection '{self.qdrant_collection_name}' does not exist. Please run ingestion.")
+        self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL, prefer_grpc=True, timeout=60.0)
+        
+        if not self.qdrant_client.collection_exists(QDRANT_COLLECTION_NAME):
+            logger.warning(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' does not exist. Please run ingestion.")
+
+        if not self.qdrant_client.collection_exists(QDRANT_SHOT_CAPTION_COLLECTION_NAME):
+            logger.warning(f"Qdrant collection '{QDRANT_SHOT_CAPTION_COLLECTION_NAME}' does not exist. Please run ingestion.")
 
         self.es_client = Elasticsearch(ES_HOST_URL, request_timeout=300)
-        self.es_index_name = ES_INDEX_NAME
-        self.es_transcript_index_name = ES_TRANSCRIPT_INDEX_NAME
 
         # Load video metadata (FPS) for frame-to-time conversion
         self.video_metadata = load_video_metadata()
@@ -61,38 +67,38 @@ class RetrievalSystem:
             self.ingest()
 
         self.text_encoders = {}
-        logger.info("Initializing text encoders...")
-        for model_name in VECTOR_SIZES.keys():
-            if model_name == "CLIP_H14":
-                self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
+        if init_text_encoders:
+            logger.info("Initializing text encoders...")
+            for model_name in VISION_EMBEDDING_DIM.keys():
+                if model_name == "CLIP_H14":
+                    self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
 
-            if model_name == "SigLIP":
-                self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
+                if model_name == "SigLIP":
+                    self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
 
-            if model_name == "SigLIP2":
-                self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
+                if model_name == "SigLIP2":
+                    self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
 
-            if model_name == "Qwen3_VL_Embedding":
-                self.text_encoders[model_name] = Qwen3VLEmbeddingTextEncoder(device=self.device)
+                if model_name == "Qwen3_VL_Embedding":
+                    self.text_encoders[model_name] = Qwen3VLEmbeddingTextEncoder(device=self.device)
 
-            if model_name == "FG_CLIP2":
-                self.text_encoders[model_name] = FGCLIP2TextEncoder(device=self.device)
+                if model_name == "FG_CLIP2":
+                    self.text_encoders[model_name] = FGCLIP2TextEncoder(device=self.device)
 
-        # Load shot boundaries
+        # Pre-load shot boundaries on RAM to efficiently group frame by
         self.shots_data = {}
         self._load_shots()
 
     def _load_shots(self):
-        shot_dir = self.data_dir / "shot"
-        if not shot_dir.exists():
-            logger.warning(f"Shot directory {shot_dir} does not exist.")
+        if not self.shot_dir.exists() or not self.shot_dir.is_dir():
+            logger.warning(f"Shot directory {self.shot_dir} does not exist.")
             return
             
         logger.info("Loading shot boundaries...")
-        for filename in os.listdir(shot_dir):
+        for filename in os.listdir(self.shot_dir):
             if filename.endswith(".json"):
                 try:
-                    with open(shot_dir / filename, "r") as f:
+                    with open(self.shot_dir / filename, "r") as f:
                         data = json.load(f)
                         for video_key, boundaries in data.items():
                             video_id = video_key.split(".")[0]
@@ -104,35 +110,28 @@ class RetrievalSystem:
     def process_video_data(self):
         pass
 
-    def ingest_embedding(self, embedding_model: str):
-        model_embedding_dir = self.embedding_dir / f"{embedding_model}"
-        if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
-            model_embedding_dir = self.embedding_dir
+    def ingest_vision_embedding(self, embedding_model: str, max_workers: int = 8):
+        model_embedding_dir = self.vision_embedding_dir / f"{embedding_model}"
         if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
             logger.warning(f"Embedding directory {model_embedding_dir} not found. Skipping {embedding_model}.")
             return
 
-        points = []
-        total_ingested = 0
-        # Directory structure: embedding_dir / model_name / video_id / keyframe_<idx>.pt
+        expected_dim = VISION_EMBEDDING_DIM.get(embedding_model)
         video_dirs = [d for d in model_embedding_dir.iterdir() if d.is_dir()]
-        for video_dir in tqdm(video_dirs, desc=f"📦 Embeddings [{embedding_model}]", unit="video"):
+
+        def _process_video_dir(video_dir):
             video_id = video_dir.name
-                
+            points = []
+
             for file_name in os.listdir(video_dir):
                 if not file_name.endswith(".pt") or not file_name.startswith("keyframe_"):
                     continue
-                
-                # Extract keyframe_idx from "keyframe_<idx>.pt"
+
                 try:
                     keyframe_idx = int(file_name.split("_")[1].split(".")[0])
                 except (IndexError, ValueError):
-                    logger.warning(f"Skipping file with unexpected name format: {file_name}")
                     continue
-                    
-                expected_dim = VECTOR_SIZES.get(embedding_model)
 
-                # Load torch tensor and convert to python list
                 try:
                     embedding_tensor = torch.load(video_dir / file_name, map_location="cpu", weights_only=True)
                     embedding = embedding_tensor.squeeze().tolist()
@@ -142,44 +141,145 @@ class RetrievalSystem:
 
                 if len(embedding) != expected_dim:
                     continue
-                
-                # Deterministic UUID based on video_id and keyframe_idx
+
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{keyframe_idx}"))
-                
                 points.append(PointStruct(
                     id=point_id,
-                    vector={embedding_model: embedding}, # Named vector
+                    vector={embedding_model: embedding},
                     payload={
                         "video_id": video_id,
                         "keyframe_idx": keyframe_idx
                     }
                 ))
-                
-                # Batch upsert every 1000 points
-                if len(points) >= 1000:
-                    self.qdrant_client.upsert(
-                        collection_name=self.qdrant_collection_name,
-                        points=points
-                    )
-                    total_ingested += len(points)
-                    points = []
-        
-        # Upsert any remaining points
-        if points:
-            self.qdrant_client.upsert(
-                collection_name=self.qdrant_collection_name,
-                points=points
+
+            if not points:
+                return 0
+
+            return batch_upsert_points(
+                self.qdrant_client,
+                QDRANT_COLLECTION_NAME,
+                points,
+                batch_size=10000,
+                wait=False,
             )
-            total_ingested += len(points)
+
+        total_ingested = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_video_dir, vd): vd for vd in video_dirs}
+            for future in tqdm(as_completed(futures), total=len(video_dirs), desc=f"📦 Embeddings [{embedding_model}]", unit="video"):
+                try:
+                    total_ingested += future.result()
+                except Exception as e:
+                    vd = futures[future]
+                    logger.error(f"Failed to ingest video {vd.name}: {e}")
+
         logger.info(f"Ingested {total_ingested} embeddings for model '{embedding_model}' into Qdrant.")
 
-    def ingest_object_detection(self):
-        obj_dir = self.data_dir / "object_detection"
-        if not obj_dir.exists():
-            logger.warning(f"Object detection directory {obj_dir} not found. Skipping.")
+    def ingest_all_vision_embedding(self, max_workers: int = 8):
+        if not self.vision_embedding_dir.exists() or not self.vision_embedding_dir.is_dir():
+            logger.warning(f"Vision embedding directory {self.vision_embedding_dir} not found. Skipping.")
             return
 
-        logger.info("Ingesting object detection metadata into Qdrant in batches...")
+        logger.info("Ingesting vision embedding into Qdrant...")
+        setup_qdrant_collection(self.qdrant_client, QDRANT_COLLECTION_NAME, VISION_EMBEDDING_DIM, overwrite=True)
+        for model_name in VISION_EMBEDDING_DIM.keys():    
+            self.ingest_vision_embedding(model_name, max_workers=max_workers)
+
+    def ingest_shot_caption_embedding(self, max_workers: int = 8):
+        if not self.caption_embedding_dir.exists() or not self.caption_embedding_dir.is_dir():
+            logger.warning(f"Shot caption embedding directory {self.caption_embedding_dir} not found. Skipping.")
+            return
+
+        logger.info("Ingesting shot caption embeddings into Qdrant...")
+        setup_qdrant_collection(self.qdrant_client, QDRANT_SHOT_CAPTION_COLLECTION_NAME, CAPTION_EMBEDDING_DIM, overwrite=True)
+
+        pt_files = sorted(self.caption_embedding_dir.glob("*.pt"))
+        if not pt_files:
+            logger.warning(f"No .pt files found in {self.caption_embedding_dir}.")
+            return
+
+        def _process_caption_file(pt_file):
+            emb_data = torch.load(pt_file, map_location="cpu")
+
+            video_id = emb_data.get("video_id", pt_file.stem)
+            num_shots = emb_data.get("total_shots", 0)
+            shot_indices = emb_data.get("shot_indices", list(range(num_shots)))
+            start_frames = emb_data.get("start_frames", [0] * num_shots)
+            end_frames = emb_data.get("end_frames", [0] * num_shots)
+            rep_frames = emb_data.get("representative_frames", [0] * num_shots)
+            embeddings_dict = emb_data.get("embeddings", {})
+
+            cap_shots_map = {}
+            cap_file = self.caption_dir / f"{video_id}.json"
+            if cap_file.exists():
+                try:
+                    with open(cap_file, "r", encoding="utf-8") as jf:
+                        cap_json = json.load(jf)
+                        for s in cap_json.get("shots", []):
+                            cap_shots_map[s["shot_idx"]] = s
+                except Exception as e:
+                    logger.warning(f"Could not load caption json for '{video_id}': {e}")
+
+            points = []
+            for i in range(num_shots):
+                s_idx = shot_indices[i]
+
+                vectors = {}
+                for aspect in CAPTION_ASPECT_KEYS:
+                    if aspect in embeddings_dict:
+                        vectors[aspect] = embeddings_dict[aspect][i].tolist()
+
+                if not vectors:
+                    continue
+
+                cap_shot = cap_shots_map.get(s_idx, {})
+                payload = {
+                    "video_id": video_id,
+                    "shot_idx": s_idx,
+                    "start_frame": start_frames[i],
+                    "end_frame": end_frames[i],
+                    "representative_frame": rep_frames[i],
+                    "keyframe_idx": rep_frames[i],
+                    "start_sec": cap_shot.get("start_sec"),
+                    "end_sec": cap_shot.get("end_sec"),
+                    "caption_text": cap_shot.get("caption_text", ""),
+                    "aspects": cap_shot.get("aspects", {}),
+                    "ocr_detected": cap_shot.get("ocr_detected", []),
+                    "audio_transcript": cap_shot.get("audio_transcript", ""),
+                }
+
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{video_id}_{s_idx}"))
+                points.append(PointStruct(id=point_id, vector=vectors, payload=payload))
+
+            if not points:
+                return 0
+
+            return batch_upsert_points(
+                self.qdrant_client,
+                QDRANT_SHOT_CAPTION_COLLECTION_NAME,
+                points,
+                batch_size=200,
+                wait=False,
+            )
+
+        total_ingested = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_caption_file, f): f for f in pt_files}
+            for future in tqdm(as_completed(futures), total=len(pt_files), desc="📝 Caption Embeddings", unit="vid"):
+                try:
+                    total_ingested += future.result()
+                except Exception as e:
+                    pt_file = futures[future]
+                    logger.error(f"Failed to ingest caption for {pt_file.name}: {e}")
+
+        logger.info(f"Ingested {total_ingested} shot caption embeddings into Qdrant.")
+
+    def ingest_object_detection(self):
+        if not self.obj_dir.exists() or not self.obj_dir.is_dir():
+            logger.warning(f"Object detection directory {self.obj_dir} not found. Skipping.")
+            return
+
+        logger.info("Ingesting object detection metadata into Qdrant...")
         count = 0
         operations = []
 
@@ -189,7 +289,7 @@ class RetrievalSystem:
                 return
             try:
                 self.qdrant_client.batch_update_points(
-                    collection_name=self.qdrant_collection_name,
+                    collection_name=QDRANT_COLLECTION_NAME,
                     update_operations=operations
                 )
                 count += len(operations)
@@ -199,7 +299,7 @@ class RetrievalSystem:
 
         # Collect all JSON files first for tqdm
         all_json_files = []
-        for root, _, files in os.walk(obj_dir):
+        for root, _, files in os.walk(self.obj_dir):
             for file_name in files:
                 if file_name.endswith(".json"):
                     all_json_files.append(Path(root) / file_name)
@@ -248,66 +348,25 @@ class RetrievalSystem:
         logger.info(f"Completed object detection payload ingestion for {count} points.")
     
     def ingest_ocr(self):
-        ocr_dir = self.data_dir / "ocr"
-        if not ocr_dir.exists():
-            logger.warning(f"OCR directory {ocr_dir} not found. Skipping OCR ingestion.")
+        if not self.ocr_dir.exists() or not self.ocr_dir.is_dir():
+            logger.warning(f"OCR directory {self.ocr_dir} not found. Skipping OCR ingestion.")
             return
-        setup_es_index(self.es_client, self.es_index_name, overwrite=True)
-        ingest_ocr_to_es(self.es_client, self.es_index_name, str(ocr_dir), OCR_SOURCES)
+        setup_ocr_index(self.es_client, ES_OCR_INDEX_NAME, overwrite=True)
+        ingest_ocr_to_es(self.es_client, ES_OCR_INDEX_NAME, str(self.ocr_dir), OCR_SOURCES)
 
     def ingest_transcript(self):
-        transcript_dir = self.data_dir / "transcript"
-        if not transcript_dir.exists():
-            logger.warning(f"Transcript directory {transcript_dir} not found. Skipping transcript ingestion.")
+        if not self.transcript_dir.exists():
+            logger.warning(f"Transcript directory {self.transcript_dir} not found. Skipping transcript ingestion.")
             return
-        setup_transcript_index(self.es_client, self.es_transcript_index_name, overwrite=True)
-        ingest_transcript_to_es(self.es_client, self.es_transcript_index_name, str(transcript_dir))
+        setup_transcript_index(self.es_client, ES_TRANSCRIPT_INDEX_NAME, overwrite=True)
+        ingest_transcript_to_es(self.es_client, ES_TRANSCRIPT_INDEX_NAME, str(self.transcript_dir))
 
     def ingest(self):
-        setup_qdrant_collection(self.qdrant_client, self.qdrant_collection_name, VECTOR_SIZES, overwrite=True)
-        for model_name in VECTOR_SIZES.keys():    
-            self.ingest_embedding(model_name)
+        self.ingest_all_vision_embedding()
+        self.ingest_shot_caption_embedding()
         self.ingest_object_detection()
         self.ingest_ocr()
         self.ingest_transcript()
-
-    def _build_qdrant_filter(self, objects: list) -> Optional[Filter]:
-        if not objects:
-            return None
-            
-        must_conditions = []
-        for obj in objects:
-            if not isinstance(obj, dict):
-                continue
-            label = obj.get("label")
-            if not label:
-                continue
-                
-            must_conditions.append(
-                FieldCondition(
-                    key="objects",
-                    match=MatchValue(value=label)
-                )
-            )
-            
-            min_instances = obj.get("min_instances", 1)
-            max_instances = obj.get("max_instances")
-            
-            range_kwargs = {"gte": min_instances}
-            if max_instances is not None and isinstance(max_instances, int):
-                range_kwargs["lte"] = max_instances
-                
-            must_conditions.append(
-                FieldCondition(
-                    key=f"class_counts.{label}",
-                    range=Range(**range_kwargs)
-                )
-            )
-            
-        if not must_conditions:
-            return None
-            
-        return Filter(must=must_conditions)
 
     def encode_query(self, query: str, model_names: list = None):
         """
@@ -360,7 +419,7 @@ class RetrievalSystem:
         Standalone OCR text search. Returns results in the same format as semantic_search.
         """
         logger.info(f"Performing OCR search for: '{query}'")
-        ocr_hits = fuzzy_search_ocr(self.es_client, self.es_index_name, query,
+        ocr_hits = fuzzy_search_ocr(self.es_client, ES_OCR_INDEX_NAME, query,
                                     ocr_sources=ocr_sources, fuzziness=fuzziness, size=size)
         
         results = []
@@ -414,7 +473,7 @@ class RetrievalSystem:
         combined_ocr_text_map = {}
 
         for q in parsed_queries:
-            hits = fuzzy_search_ocr(self.es_client, self.es_index_name,
+            hits = fuzzy_search_ocr(self.es_client, ES_OCR_INDEX_NAME,
                                     q["text"], fuzziness=fuzziness, size=5000)
             vid_map = {}
             for h in hits:
@@ -515,7 +574,7 @@ class RetrievalSystem:
 
         query_items = []
         for q in parsed_queries:
-            hits = fuzzy_search_transcript(self.es_client, self.es_transcript_index_name,
+            hits = fuzzy_search_transcript(self.es_client, ES_TRANSCRIPT_INDEX_NAME,
                                            q["text"], fuzziness=fuzziness, size=5000)
             vid_map = {}
             for h in hits:
@@ -666,7 +725,7 @@ class RetrievalSystem:
                 point_ids = [str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{vid}_{kf_idx}")) for (vid, kf_idx) in candidates.keys()]
                 try:
                     retrieved_points = self.qdrant_client.retrieve(
-                        collection_name=self.qdrant_collection_name,
+                        collection_name=QDRANT_COLLECTION_NAME,
                         ids=point_ids,
                         with_payload=True
                     )
@@ -683,12 +742,12 @@ class RetrievalSystem:
 
         elif audio_query:
             # Case B: Audio query provided (no OCR query)
-            qdrant_filter = self._build_qdrant_filter(objects) if objects else None
+            qdrant_filter = build_qdrant_filter(objects) if objects else None
             
             points = []
             if qdrant_filter:
                 res, _ = self.qdrant_client.scroll(
-                    collection_name=self.qdrant_collection_name,
+                    collection_name=QDRANT_COLLECTION_NAME,
                     scroll_filter=qdrant_filter,
                     limit=5000,
                     with_payload=True
@@ -699,7 +758,7 @@ class RetrievalSystem:
                 if vids:
                     v_filter = Filter(must=[FieldCondition(key="video_id", match=MatchAny(any=vids))])
                     res, _ = self.qdrant_client.scroll(
-                        collection_name=self.qdrant_collection_name,
+                        collection_name=QDRANT_COLLECTION_NAME,
                         scroll_filter=v_filter,
                         limit=5000,
                         with_payload=True
@@ -716,9 +775,9 @@ class RetrievalSystem:
 
         elif objects:
             # Case C: Only object filter provided (no OCR, no audio)
-            qdrant_filter = self._build_qdrant_filter(objects)
+            qdrant_filter = build_qdrant_filter(objects)
             points, _ = self.qdrant_client.scroll(
-                collection_name=self.qdrant_collection_name,
+                collection_name=QDRANT_COLLECTION_NAME,
                 scroll_filter=qdrant_filter,
                 limit=limit * 5 if group_by_shot else limit,
                 with_payload=True
@@ -792,7 +851,7 @@ class RetrievalSystem:
             return self.filter_search(
                 ocr_query=ocr_query,
                 audio_query=audio_query,
-                audio_match_level=audio_match_level,
+                # audio_match_level=audio_match_level,
                 objects=objects,
                 group_by_shot=group_by_shot,
                 score_threshold=score_threshold,
@@ -825,7 +884,7 @@ class RetrievalSystem:
             query_vector = vector[0].tolist()
             
             search_result = self.qdrant_client.query_points(
-                collection_name=self.qdrant_collection_name,
+                collection_name=QDRANT_COLLECTION_NAME,
                 query=query_vector,
                 using=model_name,
                 limit=top_k,
@@ -971,7 +1030,7 @@ class RetrievalSystem:
             return self.filter_search(
                 ocr_query=ocr_query,
                 audio_query=audio_query,
-                audio_match_level=audio_match_level,
+                # audio_match_level=audio_match_level,
                 objects=objects,
                 group_by_shot=False,
                 score_threshold=score_threshold,
@@ -1089,5 +1148,7 @@ class RetrievalSystem:
         return final_results[:limit]
 
 if __name__ == "__main__":
-    system = RetrievalSystem(re_ingest=True)
-    results = system.semantic_search("A person riding a horse on a beach.")
+    system = RetrievalSystem(init_text_encoders=False)
+    # results = system.semantic_search("A person riding a horse on a beach.")
+    # system.ingest_shot_caption_embedding()
+    system.ingest_all_vision_embedding(max_workers=12)

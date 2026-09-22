@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = False):
+def setup_ocr_index(es_client: Elasticsearch, index_name: str, overwrite: bool = False):
     """
     Create the Elasticsearch index for OCR text with custom analyzers
     supporting exact, fuzzy, and edge-ngram partial matching.
@@ -18,7 +18,7 @@ def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = 
     if es_client.indices.exists(index=index_name):
         if overwrite:
             logger.info(f"ES index '{index_name}' exists. Deleting...")
-            es_client.indices.delete(index=index_name, request_timeout=300)
+            es_client.indices.delete(index=index_name, timeout=300)
         else:
             logger.info(f"ES index '{index_name}' already exists. Skipping creation.")
             return
@@ -67,7 +67,7 @@ def setup_es_index(es_client: Elasticsearch, index_name: str, overwrite: bool = 
         }
     }
 
-    es_client.indices.create(index=index_name, body=index_body, request_timeout=300)
+    es_client.indices.create(index=index_name, body=index_body, timeout=300)
     logger.info(f"ES index '{index_name}' created successfully with N-Gram support.")
 
 
@@ -204,7 +204,7 @@ def fuzzy_search_ocr(es_client: Elasticsearch, index_name: str, query: str,
         index=index_name,
         query=es_query,
         size=size,
-        _source=["video_id", "keyframe_idx", "ocr_source", "ocr_text"]
+        source=["video_id", "keyframe_idx", "ocr_source", "ocr_text"]
     )
 
     frame_scores = {}
@@ -238,7 +238,7 @@ def setup_transcript_index(es_client: Elasticsearch, index_name: str, overwrite:
     if es_client.indices.exists(index=index_name):
         if overwrite:
             logger.info(f"ES index '{index_name}' exists. Deleting...")
-            es_client.indices.delete(index=index_name, request_timeout=300)
+            es_client.indices.delete(index=index_name, timeout=300)
         else:
             logger.info(f"ES index '{index_name}' already exists. Skipping creation.")
             return
@@ -288,7 +288,7 @@ def setup_transcript_index(es_client: Elasticsearch, index_name: str, overwrite:
         }
     }
 
-    es_client.indices.create(index=index_name, body=index_body, request_timeout=300)
+    es_client.indices.create(index=index_name, body=index_body, timeout=300)
     logger.info(f"ES transcript index '{index_name}' created successfully with N-Gram support.")
 
 
@@ -383,7 +383,7 @@ def fuzzy_search_transcript(es_client: Elasticsearch, index_name: str, query: st
         index=index_name,
         query=es_query,
         size=size,
-        _source=["video_id", "start", "end", "text"]
+        source=["video_id", "start", "end", "text"]
     )
 
     results = []
