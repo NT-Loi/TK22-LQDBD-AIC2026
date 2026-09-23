@@ -73,7 +73,23 @@
                 </div>
               </div>
             </div>
-            <button type="button" id="add-query-btn" class="btn btn-add">+ Add Event</button>
+            <button type="button" id="add-query-btn" class="btn btn-add">+ Add Event (Temporal)</button>
+          </section>
+
+          <!-- Text Query Filter (Non-temporal, Frame / Video Level) -->
+          <section class="sidebar-section">
+            <label class="section-label">🎯 Text Query Filter</label>
+            <div id="text-filter-inputs-container">
+              <div class="search-row text-filter-row" data-index="0">
+                <input type="text" name="text_filter_0" class="sidebar-input text-filter-query-input"
+                  placeholder="Filter text (e.g. white car)..." autocomplete="off">
+                <select name="text_filter_level_0" class="sidebar-select-sm text-filter-level-select" style="width: 72px; flex-shrink: 0;">
+                  <option value="frame" selected>Frame</option>
+                  <option value="video">Video</option>
+                </select>
+              </div>
+            </div>
+            <button type="button" id="add-text-filter-btn" class="btn btn-add">+ Add Text Query</button>
           </section>
 
           <!-- OCR Query -->
@@ -129,7 +145,8 @@
             <div class="option-row">
               <label class="option-label">Model(s)</label>
               <select id="models-select" multiple size="3" class="sidebar-select">
-                <option value="all" selected>All</option>
+                <option value="SigLIP2" selected>SigLIP2</option>
+                <option value="all">All</option>
               </select>
             </div>
 

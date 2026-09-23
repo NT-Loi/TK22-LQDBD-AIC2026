@@ -16,4 +16,5 @@ dependencies = [
     "transformers>=5.12.1",
     "google-genai>=2.24.0",
     "python-dotenv>=1.2.2",
+    "deep-translator>=1.11.4",
 ]

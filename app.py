@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
-from config import VISION_EMBEDDING_DIM, KEYFRAME_SEARCH_WEIGHT, CAPTION_SEARCH_WEIGHT
+from config import VISION_EMBEDDING_DIM, KEYFRAME_SEARCH_WEIGHT, CAPTION_SEARCH_WEIGHT, DEFAULT_VISION_MODEL
 
 system = None
 video_metadata = {}
@@ -77,6 +77,7 @@ from typing import List, Optional, Union, Any
 
 class SearchQuery(BaseModel):
     text_queries: Optional[List[Any]] = []
+    text_filters: Optional[Any] = None  # Non-temporal text filters: list of {text: str, level: "frame"|"video"}
     anchor_index: int = 0
     models: Optional[List[str]] = None
     objects: Optional[List[Any]] = None
@@ -149,13 +150,37 @@ async def search(query: SearchQuery):
             lvl = str(query.ocr_query.get("level", "frame")).strip().lower()
             valid_ocr_queries.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
 
+    # Resolve text filters (non-temporal frame/video level visual filters)
+    valid_text_filters = []
+    if isinstance(query.text_filters, list):
+        for item in query.text_filters:
+            if isinstance(item, str) and item.strip():
+                valid_text_filters.append({"text": item.strip(), "level": "frame"})
+            elif isinstance(item, dict):
+                text_val = str(item.get("text", "")).strip()
+                if text_val:
+                    lvl = str(item.get("level", "frame")).strip().lower()
+                    valid_text_filters.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
+    elif isinstance(query.text_filters, str) and query.text_filters.strip():
+        valid_text_filters.append({"text": query.text_filters.strip(), "level": "frame"})
+    elif isinstance(query.text_filters, dict):
+        text_val = str(query.text_filters.get("text", "")).strip()
+        if text_val:
+            lvl = str(query.text_filters.get("level", "frame")).strip().lower()
+            valid_text_filters.append({"text": text_val, "level": lvl if lvl in ("frame", "video") else "frame"})
+
     audio_query = valid_audio_queries if valid_audio_queries else None
     ocr_query = valid_ocr_queries if valid_ocr_queries else None
+    text_filters = valid_text_filters if valid_text_filters else None
     
-    # Determine model_names based on selected models
+    # Determine model_names based on selected models (Direction 3: default to SigLIP2)
     model_names = None
     if query.models and "all" not in query.models:
         model_names = query.models
+    elif query.models and "all" in query.models:
+        model_names = ["all"]
+    else:
+        model_names = [DEFAULT_VISION_MODEL]
     
     if len(valid_text_queries) > 1:
         # Perform temporal search
@@ -167,7 +192,8 @@ async def search(query: SearchQuery):
             score_threshold=query.score_threshold,
             limit=query.limit,
             ocr_query=ocr_query,
-            audio_query=audio_query
+            audio_query=audio_query,
+            text_filters=text_filters
         )
     elif len(valid_text_queries) == 1:
         # Perform search using the single event query
@@ -186,7 +212,8 @@ async def search(query: SearchQuery):
                 limit=query.limit,
                 ocr_query=q_ocr,
                 audio_query=q_audio,
-                objects=q_objects
+                objects=q_objects,
+                text_filters=text_filters
             )
         elif search_mode == "both":
             # Compute weights: caption_weight from request, keyframe_weight = 1 - caption_weight
@@ -201,7 +228,9 @@ async def search(query: SearchQuery):
                 ocr_query=q_ocr,
                 audio_query=q_audio,
                 keyframe_weight=kf_w,
-                caption_weight=cap_w
+                caption_weight=cap_w,
+                text_filters=text_filters,
+                group_by_shot=query.group_by_shot
             )
         else:
             results = system.semantic_search(
@@ -212,14 +241,17 @@ async def search(query: SearchQuery):
                 group_by_shot=query.group_by_shot,
                 limit=query.limit,
                 ocr_query=q_ocr,
-                audio_query=q_audio
+                audio_query=q_audio,
+                text_filters=text_filters
             )
     else:
-        # No text queries -> Filter search (OCR, audio transcript, object detection)
+        # No text queries -> Filter search (OCR, audio transcript, object detection, text query filter)
         results = system.filter_search(
             ocr_query=ocr_query,
             audio_query=audio_query,
             objects=query.objects,
+            text_filters=text_filters,
+            model_names=model_names,
             score_threshold=query.score_threshold,
             group_by_shot=query.group_by_shot,
             limit=query.limit

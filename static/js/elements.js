@@ -2,6 +2,8 @@ export const elements = {
   get searchForm() { return document.getElementById("search-form"); },
   get queryInputsContainer() { return document.getElementById("query-inputs-container"); },
   get addQueryBtn() { return document.getElementById("add-query-btn"); },
+  get textFilterInputsContainer() { return document.getElementById("text-filter-inputs-container"); },
+  get addTextFilterBtn() { return document.getElementById("add-text-filter-btn"); },
   get audioInputsContainer() { return document.getElementById("audio-inputs-container"); },
   get addAudioBtn() { return document.getElementById("add-audio-btn"); },
   get ocrInputsContainer() { return document.getElementById("ocr-inputs-container"); },

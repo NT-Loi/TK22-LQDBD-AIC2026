@@ -24,6 +24,10 @@ CAPTION_MODEL = "Qwen3_Embedding"
 VISION_EMBEDDING_DIM = {k: v["dim"] for k, v in VISION_MODELS.items()}
 EMBEDDING_WEIGHTS    = {k: v["weight"] for k, v in VISION_MODELS.items()}
 
+# Default vision model for interactive search (ultra-fast ~200ms)
+DEFAULT_VISION_MODEL = "SigLIP2"
+HNSW_EF_SEARCH = 128
+
 # Which text encoders to load at init
 TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL]
 
@@ -49,3 +53,6 @@ CAPTION_SEARCH_WEIGHT = 0.5
 # Hybrid weights for shot caption search (dense semantic vs lexical BM25, must sum to 1.0)
 CAPTION_DENSE_WEIGHT = 0.6
 CAPTION_BM25_WEIGHT = 0.4
+
+# Auto-translate English query to Vietnamese for shot caption search
+AUTO_TRANSLATE_EN_CAPTION = False

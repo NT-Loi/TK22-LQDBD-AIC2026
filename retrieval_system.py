@@ -28,9 +28,37 @@ from utils import *
 from utils.video_metadata import load_video_metadata
 import json
 import bisect
+import collections
+import threading
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+class ThreadSafeLRUCache:
+    """Thread-safe high-capacity LRU Cache for query embeddings."""
+    def __init__(self, maxsize: int = 8192):
+        self.maxsize = maxsize
+        self.cache = collections.OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            return None
+
+    def set(self, key, value):
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+            self.cache[key] = value
+            if len(self.cache) > self.maxsize:
+                self.cache.popitem(last=False)
+
+    def __len__(self):
+        with self.lock:
+            return len(self.cache)
 
 class RetrievalSystem:
     def __init__(self, data_dir: str=DATA_DIR, device=None, re_ingest: bool=False, init_text_encoders: bool=True):
@@ -42,6 +70,7 @@ class RetrievalSystem:
         self.device = device
 
         self.data_dir = Path(data_dir)
+        self.keyframe_dir = self.data_dir / "keyframe"
         self.vision_embedding_dir = self.data_dir / "embedding"
         self.caption_dir = self.data_dir / "caption"
         self.caption_embedding_dir = self.data_dir / "caption_embedding"
@@ -91,9 +120,60 @@ class RetrievalSystem:
                 if model_name == "Qwen3_Embedding":
                     self.text_encoders[model_name] = Qwen3EmbeddingTextEncoder(device=self.device)
 
+        # High-capacity thread-safe LRU cache for query text embeddings (up to 8,192 queries)
+        self.query_cache = ThreadSafeLRUCache(maxsize=8192)
+
         # Pre-load shot boundaries on RAM to efficiently group frame by
         self.shots_data = {}
         self._load_shots()
+
+        # Pre-index sorted keyframe indices per video into RAM for fast O(log K) shot expansion
+        self.video_keyframes = {}
+        self._load_video_keyframes()
+
+    def _load_video_keyframes(self):
+        """Pre-index all video keyframes into RAM for fast in-memory shot expansion."""
+        kf_base = getattr(self, "keyframe_dir", self.data_dir / "keyframe")
+        if not kf_base.exists() or not kf_base.is_dir():
+            logger.warning(f"Keyframe directory {kf_base} does not exist.")
+            return
+
+        logger.info("Pre-indexing video keyframes into RAM...")
+        count = 0
+        try:
+            for vid_entry in os.scandir(kf_base):
+                if vid_entry.is_dir():
+                    vid = vid_entry.name
+                    indices = []
+                    for f_entry in os.scandir(vid_entry.path):
+                        fname = f_entry.name
+                        if fname.startswith("keyframe_") and fname.endswith(".webp"):
+                            try:
+                                idx = int(fname[9:-5])
+                                indices.append(idx)
+                            except ValueError:
+                                continue
+                    indices.sort()
+                    self.video_keyframes[vid] = indices
+                    count += 1
+            logger.info(f"Pre-indexed keyframes for {count} videos into RAM.")
+        except Exception as e:
+            logger.error(f"Error pre-indexing keyframes: {e}")
+
+    def _cached_encode(self, model_name: str, query: str):
+        """Encode query using specified model with thread-safe high-capacity LRU caching."""
+        if not hasattr(self, "query_cache"):
+            self.query_cache = ThreadSafeLRUCache(maxsize=8192)
+
+        clean_q = query.strip()
+        cache_key = (model_name, clean_q)
+        cached = self.query_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
+        encoded = self.text_encoders[model_name](clean_q)
+        self.query_cache.set(cache_key, encoded)
+        return encoded.copy()
 
     def _load_shots(self):
         if not self.shot_dir.exists() or not self.shot_dir.is_dir():
@@ -384,7 +464,7 @@ class RetrievalSystem:
 
     def encode_query(self, query: str, model_names: list = None):
         """
-        Encode query using specified text encoders.
+        Encode query using specified text encoders with LRU cache and multi-thread parallelization.
         If model_names is None, it uses all initialized text encoders.
         Returns a dictionary mapping model_name to encoded text vector.
         """
@@ -392,10 +472,22 @@ class RetrievalSystem:
             model_names = list(self.text_encoders.keys())
             
         encoded_vectors = {}
+        valid_models = [m for m in model_names if m in self.text_encoders]
+
+        if len(valid_models) > 1:
+            def _enc(m):
+                return m, self._cached_encode(m, query)
+            with ThreadPoolExecutor(max_workers=min(len(valid_models), 4)) as executor:
+                futures = [executor.submit(_enc, m) for m in valid_models]
+                for fut in as_completed(futures):
+                    m, vec = fut.result()
+                    encoded_vectors[m] = vec
+        else:
+            for model_name in valid_models:
+                encoded_vectors[model_name] = self._cached_encode(model_name, query)
+
         for model_name in model_names:
-            if model_name in self.text_encoders:
-                encoded_vectors[model_name] = self.text_encoders[model_name](query)
-            else:
+            if model_name not in self.text_encoders:
                 logger.warning(f"Text encoder for '{model_name}' is not initialized.")
                 
         return encoded_vectors
@@ -693,36 +785,280 @@ class RetrievalSystem:
 
         return total_score
 
+    def _is_frame_in_same_shot(self, video_id: str, kf1: int, kf2: int) -> bool:
+        """
+        Check if two keyframes belong to the same shot in video_id using shot boundary data.
+        """
+        if not hasattr(self, "shots_data") or video_id not in self.shots_data:
+            return False
+        boundaries = self.shots_data[video_id]
+        if not boundaries:
+            return False
+        starts = [b[0] for b in boundaries]
+        idx1 = bisect.bisect_right(starts, kf1) - 1
+        if idx1 >= 0 and kf1 <= boundaries[idx1][1]:
+            return boundaries[idx1][0] <= kf2 <= boundaries[idx1][1]
+        return False
+
+    def _get_text_filter_ranges(self, text_filters, model_names: list = None, top_k: int = 3000) -> dict:
+        """
+        Get text filter data for single or multiple visual text queries with per-query level ('frame' or 'video').
+        Commutative AND logic: order of queries is non-temporal and has no bearing on chronological sequence.
+        Returns dict with 'common_vids' and 'query_items'.
+        """
+        if isinstance(text_filters, dict) and "common_vids" in text_filters:
+            return text_filters
+
+        parsed_queries = []
+        if isinstance(text_filters, str):
+            if text_filters.strip():
+                parsed_queries.append({"text": text_filters.strip(), "level": "frame"})
+        elif isinstance(text_filters, list):
+            for item in text_filters:
+                if isinstance(item, str) and item.strip():
+                    parsed_queries.append({"text": item.strip(), "level": "frame"})
+                elif isinstance(item, dict) and item.get("text", "").strip():
+                    lvl = item.get("level", "frame")
+                    if lvl not in ("frame", "video"):
+                        lvl = "frame"
+                    parsed_queries.append({"text": item["text"].strip(), "level": lvl})
+
+        if not parsed_queries:
+            return {}
+
+        # Select primary vision text encoder
+        vision_model_names = [m for m in (model_names or []) if m in self.text_encoders and m in VISION_MODELS]
+        if not vision_model_names:
+            vision_model_names = [m for m in ["SigLIP2", "SigLIP", "Qwen3_VL_Embedding", "CLIP_H14"] if m in self.text_encoders]
+        if not vision_model_names:
+            vision_model_names = list(self.text_encoders.keys())
+        if not vision_model_names:
+            logger.error("No text encoders available for text filter.")
+            return {}
+
+        primary_model = vision_model_names[0]
+        query_items = []
+
+        def _fetch_filter(q_item):
+            try:
+                encoded = self._cached_encode(primary_model, q_item["text"])
+                query_vector = encoded[0].tolist()
+
+                search_result = self.qdrant_client.query_points(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    query=query_vector,
+                    using=primary_model,
+                    limit=top_k,
+                    search_params=SearchParams(exact=False, hnsw_ef=HNSW_EF_SEARCH),
+                    with_payload=True
+                ).points
+                return q_item, search_result
+            except Exception as e:
+                logger.error(f"Error executing Qdrant query for text filter '{q_item['text']}': {e}")
+                return q_item, []
+
+        query_hits = []
+        if len(parsed_queries) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(parsed_queries), 4)) as executor:
+                futures = [executor.submit(_fetch_filter, q) for q in parsed_queries]
+                for fut in as_completed(futures):
+                    q_item, search_result = fut.result()
+                    if search_result:
+                        query_hits.append((q_item, search_result))
+        else:
+            q_item, search_result = _fetch_filter(parsed_queries[0])
+            if search_result:
+                query_hits.append((q_item, search_result))
+
+        for q, search_result in query_hits:
+            scores = [hit.score for hit in search_result]
+            min_score = min(scores)
+            max_score = max(scores)
+
+            vid_map = {}
+            for hit in search_result:
+                if max_score == min_score:
+                    norm_score = 1.0 if max_score > 0 else 0.0
+                else:
+                    norm_score = (hit.score - min_score) / (max_score - min_score)
+
+                # Keep candidates with normalized score >= 0.15 (exclude tail noise)
+                if norm_score < 0.15:
+                    continue
+
+                vid = hit.payload.get("video_id")
+                kf_idx = hit.payload.get("keyframe_idx", hit.payload.get("frame_idx", 0))
+                if not vid:
+                    continue
+
+                if vid not in vid_map:
+                    vid_map[vid] = {}
+                vid_map[vid][kf_idx] = {
+                    "score": norm_score,
+                    "raw_score": hit.score,
+                    "text": q["text"]
+                }
+
+            query_items.append({
+                "text": q["text"],
+                "level": q["level"],
+                "vid_map": vid_map
+            })
+
+        if not query_items:
+            return {}
+
+        # AND Logic: Keep only videos present in ALL per_query_text_filter_results
+        common_vids = set(query_items[0]["vid_map"].keys())
+        for q_item in query_items[1:]:
+            common_vids &= set(q_item["vid_map"].keys())
+
+        if not common_vids:
+            return {}
+
+        return {
+            "common_vids": common_vids,
+            "query_items": query_items
+        }
+
+    def _frame_in_text_filter_ranges(self, video_id: str, keyframe_idx: int, text_filter_data: dict) -> float:
+        """
+        Check if a keyframe passes all text filters (AND logic across queries, per-query level).
+        Order of text filter queries is non-temporal and has no bearing on chronological sequence.
+        Returns combined score (>0.0) if passed, or 0.0 if failed.
+        """
+        if not text_filter_data or "common_vids" not in text_filter_data:
+            return 0.0
+
+        if video_id not in text_filter_data["common_vids"]:
+            return 0.0
+
+        total_score = 0.0
+
+        for q_item in text_filter_data["query_items"]:
+            level = q_item["level"]
+            vid_map = q_item["vid_map"]
+            frames_dict = vid_map.get(video_id, {})
+
+            if level == "video":
+                # Video level: satisfied if video matched this text query anywhere
+                if not frames_dict:
+                    return 0.0
+                max_sc = max(info["score"] for info in frames_dict.values())
+                total_score += max_sc
+            else:
+                # Frame level: keyframe itself must match this text query (or within proximity window / shot)
+                if keyframe_idx in frames_dict:
+                    total_score += frames_dict[keyframe_idx]["score"]
+                else:
+                    matched_sc = 0.0
+                    for kf, info in frames_dict.items():
+                        if abs(kf - keyframe_idx) <= 150:  # ~5s frame window
+                            matched_sc = max(matched_sc, info["score"])
+                        elif self._is_frame_in_same_shot(video_id, kf, keyframe_idx):
+                            matched_sc = max(matched_sc, info["score"])
+
+                    if matched_sc > 0.0:
+                        total_score += matched_sc
+                    else:
+                        return 0.0
+
+        return total_score
+
     def filter_search(self, ocr_query: str = None, audio_query = None, objects: list = None,
+                      text_filters = None, model_names: list = None,
                       group_by_shot: bool = False, score_threshold: float = 0.0, limit: int = 100):
         """
-        Perform search purely using metadata filters (OCR, audio transcript, object detection)
+        Perform search purely using metadata filters (OCR, audio transcript, text query filter, object detection)
         without requiring a text query.
         """
-        logger.info(f"Performing filter search with ocr_query='{ocr_query}', audio_query='{audio_query}', objects={objects}")
+        logger.info(f"Performing filter search with ocr_query='{ocr_query}', audio_query='{audio_query}', text_filters='{text_filters}', objects={objects}")
 
-        if not ocr_query and not audio_query and not objects:
+        if not ocr_query and not audio_query and not objects and not text_filters:
             return []
 
         # 1. Gather transcript ranges if audio_query is given
         transcript_ranges = None
         if audio_query:
             transcript_ranges = self._get_transcript_filter_ranges(audio_query)
-            if not transcript_ranges and not ocr_query and not objects:
+            if not transcript_ranges and not ocr_query and not objects and not text_filters:
                 return []
 
         # 2. Gather OCR ranges if ocr_query is given
         ocr_ranges = None
         if ocr_query:
             ocr_ranges = self._get_ocr_filter_ranges(ocr_query)
-            if not ocr_ranges and not audio_query and not objects:
+            if not ocr_ranges and not audio_query and not objects and not text_filters:
+                return []
+
+        # 3. Gather Text Filter ranges if text_filters is given
+        text_filter_ranges = None
+        if text_filters:
+            text_filter_ranges = self._get_text_filter_ranges(text_filters, model_names=model_names)
+            if not text_filter_ranges and not ocr_query and not audio_query and not objects:
                 return []
 
         # Map: (video_id, keyframe_idx) -> score
         candidates = {}
 
-        if ocr_ranges:
-            # Case A: OCR query provided
+        if text_filter_ranges:
+            # Case A: Text query filter provided
+            for vid in text_filter_ranges["common_vids"]:
+                if ocr_ranges and vid not in ocr_ranges["common_vids"]:
+                    continue
+                if transcript_ranges and vid not in transcript_ranges["common_vids"]:
+                    continue
+
+                # Collect candidate frames for this video
+                frame_candidates = set()
+                for q_item in text_filter_ranges["query_items"]:
+                    if q_item["level"] == "frame":
+                        frame_candidates.update(q_item["vid_map"].get(vid, {}).keys())
+                if not frame_candidates:
+                    for q_item in text_filter_ranges["query_items"]:
+                        frame_candidates.update(q_item["vid_map"].get(vid, {}).keys())
+
+                for kf_idx in frame_candidates:
+                    txt_sc = self._frame_in_text_filter_ranges(vid, kf_idx, text_filter_ranges)
+                    if txt_sc <= 0.0:
+                        continue
+
+                    ocr_sc = 0.0
+                    if ocr_ranges:
+                        ocr_sc = self._frame_in_ocr_ranges(vid, kf_idx, ocr_ranges)
+                        if ocr_sc <= 0.0:
+                            continue
+
+                    aud_sc = 0.0
+                    if transcript_ranges:
+                        aud_sc = self._frame_in_transcript_ranges(vid, kf_idx, transcript_ranges)
+                        if aud_sc <= 0.0:
+                            continue
+
+                    candidates[(vid, kf_idx)] = txt_sc + ocr_sc + aud_sc
+
+            # Check object filter if objects present
+            if objects and candidates:
+                point_ids = [str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{vid}_{kf_idx}")) for (vid, kf_idx) in candidates.keys()]
+                try:
+                    retrieved_points = self.qdrant_client.retrieve(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        ids=point_ids,
+                        with_payload=True
+                    )
+                    filtered_candidates = {}
+                    for p in retrieved_points:
+                        vid = p.payload.get("video_id")
+                        kf_idx = p.payload.get("keyframe_idx", p.payload.get("frame_idx", 0))
+                        if self._matches_object_filters(p.payload, objects):
+                            score = candidates.get((vid, kf_idx), 1.0)
+                            filtered_candidates[(vid, kf_idx)] = score
+                    candidates = filtered_candidates
+                except Exception as e:
+                    logger.warning(f"Error batch retrieving Qdrant points: {e}")
+
+        elif ocr_ranges:
+            # Case B: OCR query provided
             for vid in ocr_ranges["common_vids"]:
                 # Collect candidate frames for this video
                 for q_item in ocr_ranges["query_items"]:
@@ -755,7 +1091,7 @@ class RetrievalSystem:
                     logger.warning(f"Error batch retrieving Qdrant points: {e}")
 
         elif audio_query:
-            # Case B: Audio query provided (no OCR query)
+            # Case C: Audio query provided (no OCR query, no text filters)
             qdrant_filter = build_qdrant_filter(objects) if objects else None
             
             points = []
@@ -788,7 +1124,7 @@ class RetrievalSystem:
                         candidates[(vid, kf_idx)] = aud_score
 
         elif objects:
-            # Case C: Only object filter provided (no OCR, no audio)
+            # Case D: Only object filter provided (no OCR, no audio, no text filters)
             qdrant_filter = build_qdrant_filter(objects)
             points, _ = self.qdrant_client.scroll(
                 collection_name=QDRANT_COLLECTION_NAME,
@@ -858,8 +1194,8 @@ class RetrievalSystem:
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
 
-    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100, ocr_query: str = None, audio_query = None, audio_match_level: str = "frame"):
-        logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}, ocr_query: '{ocr_query}', audio_query: '{audio_query}', match_level: '{audio_match_level}'.")
+    def semantic_search(self, query: str, model_names: list = None, objects: list = None, top_k: int = 1000, score_threshold: float = 0.0, group_by_shot: bool = False, limit: int = 100, ocr_query: str = None, audio_query = None, audio_match_level: str = "frame", text_filters = None):
+        logger.info(f"Performing semantic search for: '{query}' with model(s): {model_names}, ocr_query: '{ocr_query}', audio_query: '{audio_query}', match_level: '{audio_match_level}', text_filters: '{text_filters}'.")
         
         if not query or not query.strip():
             return self.filter_search(
@@ -867,6 +1203,8 @@ class RetrievalSystem:
                 audio_query=audio_query,
                 # audio_match_level=audio_match_level,
                 objects=objects,
+                text_filters=text_filters,
+                model_names=model_names,
                 group_by_shot=group_by_shot,
                 score_threshold=score_threshold,
                 limit=limit
@@ -884,69 +1222,102 @@ class RetrievalSystem:
         transcript_ranges = None
         if audio_query:
             transcript_ranges = self._get_transcript_filter_ranges(audio_query)
+
+        # Build text filter ranges if text_filters is provided
+        text_filter_ranges = None
+        if text_filters:
+            text_filter_ranges = self._get_text_filter_ranges(text_filters, model_names=model_names)
+            if not text_filter_ranges:
+                logger.info("No matches for text_filters. Returning empty results.")
+                return []
         
         # Only encode with vision-compatible models (those with entries in VISION_MODELS)
-        if model_names is None:
+        if model_names is None or not model_names:
+            vision_model_names = [DEFAULT_VISION_MODEL] if DEFAULT_VISION_MODEL in self.text_encoders else [m for m in self.text_encoders.keys() if m in VISION_MODELS]
+        elif "all" in model_names:
             vision_model_names = [m for m in self.text_encoders.keys() if m in VISION_MODELS]
         else:
             vision_model_names = [m for m in model_names if m in VISION_MODELS]
+            if not vision_model_names and DEFAULT_VISION_MODEL in self.text_encoders:
+                vision_model_names = [DEFAULT_VISION_MODEL]
 
         encoded_vectors = self.encode_query(query, vision_model_names)
-        
+
+        # Parallel Qdrant queries across models using HNSW approximate search
+        def _query_model(m_name, vector):
+            q_vec = vector[0].tolist()
+            res = self.qdrant_client.query_points(
+                collection_name=QDRANT_COLLECTION_NAME,
+                query=q_vec,
+                using=m_name,
+                limit=top_k,
+                search_params=SearchParams(exact=False, hnsw_ef=HNSW_EF_SEARCH),
+                with_payload=True
+            ).points
+            if objects:
+                res = [hit for hit in res if self._matches_object_filters(hit.payload, objects)]
+            return m_name, res
+
+        model_results = {}
+        if len(encoded_vectors) > 1:
+            with ThreadPoolExecutor(max_workers=len(encoded_vectors)) as executor:
+                futures = [executor.submit(_query_model, m, v) for m, v in encoded_vectors.items()]
+                for f in futures:
+                    m, res = f.result()
+                    if res:
+                        model_results[m] = res
+        elif len(encoded_vectors) == 1:
+            m, v = next(iter(encoded_vectors.items()))
+            _, res = _query_model(m, v)
+            if res:
+                model_results[m] = res
+
         normalized_results = {}
         all_payloads = {}
-        
-        for model_name, vector in encoded_vectors.items():
+
+        for model_name, search_result in model_results.items():
             if model_name not in EMBEDDING_WEIGHTS:
                 logger.warning(f"Embedding weight for {model_name} hasn't been initialized. Use 1.0 as default value.")
                 EMBEDDING_WEIGHTS[model_name] = 1.0
 
-            query_vector = vector[0].tolist()
-            
-            search_result = self.qdrant_client.query_points(
-                collection_name=QDRANT_COLLECTION_NAME,
-                query=query_vector,
-                using=model_name,
-                limit=top_k,
-                search_params=SearchParams(exact=True),
-                with_payload=True
-            ).points
-
-            if objects:
-                search_result = [hit for hit in search_result if self._matches_object_filters(hit.payload, objects)]
-            
-            if not search_result:
-                continue
-                
             # Min-Max Normalization
             scores = [hit.score for hit in search_result]
             min_score = min(scores)
             max_score = max(scores)
-            
+
             model_normalized_scores = {}
             for hit in search_result:
                 # Save payload for final output
                 all_payloads[hit.id] = hit.payload
-                
+
                 # Handle edge case where max == min
                 if max_score == min_score:
                     norm_score = 1.0 if max_score > 0 else 0.0
                 else:
                     norm_score = (hit.score - min_score) / (max_score - min_score)
-                    
+
                 model_normalized_scores[hit.id] = norm_score
-                
+
             normalized_results[model_name] = model_normalized_scores
             
-        # Calculate overall score
-        final_scores = {}
-        total_weight = sum(EMBEDDING_WEIGHTS.values())
+        # Calculate overall score: normalize by the sum of weights of models that actually returned this keyframe
+        point_weighted_sum = {}
+        point_weight_sum = {}
         for model_name, scores_dict in normalized_results.items():
-            weight = EMBEDDING_WEIGHTS.get(model_name)
+            weight = EMBEDDING_WEIGHTS.get(model_name, 1.0)
             for point_id, norm_score in scores_dict.items():
-                if point_id not in final_scores:
-                    final_scores[point_id] = 0.0
-                final_scores[point_id] += float(norm_score * weight / total_weight)
+                if point_id not in point_weighted_sum:
+                    point_weighted_sum[point_id] = 0.0
+                    point_weight_sum[point_id] = 0.0
+                point_weighted_sum[point_id] += float(norm_score * weight)
+                point_weight_sum[point_id] += float(weight)
+
+        final_scores = {}
+        for point_id, w_sum in point_weight_sum.items():
+            if w_sum > 0:
+                final_scores[point_id] = point_weighted_sum[point_id] / w_sum
+            else:
+                final_scores[point_id] = 0.0
                 
         # Apply OCR intersection filter before ranking
         if ocr_ranges is not None:
@@ -971,6 +1342,18 @@ class RetrievalSystem:
                 ) > 0.0
             }
             logger.info(f"After transcript filter: {len(final_scores)} results remain.")
+
+        # Apply Text filter intersection filter before ranking
+        if text_filter_ranges is not None:
+            final_scores = {
+                pid: score for pid, score in final_scores.items()
+                if self._frame_in_text_filter_ranges(
+                    all_payloads[pid].get("video_id"),
+                    all_payloads[pid].get("keyframe_idx", all_payloads[pid].get("frame_idx", 0)),
+                    text_filter_ranges
+                ) > 0.0
+            }
+            logger.info(f"After text filter: {len(final_scores)} results remain.")
 
         # Rank and return
         ranked_points = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
@@ -1035,8 +1418,8 @@ class RetrievalSystem:
             
         return results[:limit]
 
-    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_video: bool = False, score_threshold: float = 0.0, limit: int = 100, ocr_query = None, audio_query = None, audio_match_level: str = "frame"):
-        logger.info(f"Performing temporal search for {len(queries) if queries else 0} queries with group_by_video={group_by_video}")
+    def temporal_search(self, queries: list, model_names: list = None, objects: list = None, group_by_video: bool = False, score_threshold: float = 0.0, limit: int = 100, ocr_query = None, audio_query = None, audio_match_level: str = "frame", text_filters = None):
+        logger.info(f"Performing temporal search for {len(queries) if queries else 0} queries with group_by_video={group_by_video}, text_filters={text_filters}")
         
         parsed_queries = []
         if queries:
@@ -1052,20 +1435,29 @@ class RetrievalSystem:
                 audio_query=audio_query,
                 # audio_match_level=audio_match_level,
                 objects=objects,
+                text_filters=text_filters,
+                model_names=model_names,
                 group_by_shot=False,
                 score_threshold=score_threshold,
                 limit=limit
             )
+
+        # Pre-compute text_filter_ranges once for all event sub-queries
+        text_filter_ranges = None
+        if text_filters:
+            text_filter_ranges = self._get_text_filter_ranges(text_filters, model_names=model_names)
+            if not text_filter_ranges:
+                logger.info("No matches for text_filters in temporal_search. Returning empty results.")
+                return []
         
-        # 1. Search each query with per-event filters (falling back to global filters)
-        query_results = []
-        for q in parsed_queries:
+        # 1. Search each query with per-event filters concurrently
+        def _search_single_query(q):
             q_text = q["text"]
             q_ocr = q.get("ocr") if q.get("ocr") is not None else ocr_query
             q_audio = q.get("audio") if q.get("audio") is not None else audio_query
             q_objects = q.get("objects") if q.get("objects") is not None else objects
 
-            res = self.semantic_search(
+            return self.semantic_search(
                 q_text,
                 model_names=model_names,
                 objects=q_objects,
@@ -1075,9 +1467,15 @@ class RetrievalSystem:
                 group_by_shot=False,
                 ocr_query=q_ocr,
                 audio_query=q_audio,
-                audio_match_level=audio_match_level
+                audio_match_level=audio_match_level,
+                text_filters=text_filter_ranges
             )
-            query_results.append(res)
+
+        if len(parsed_queries) > 1:
+            with ThreadPoolExecutor(max_workers=len(parsed_queries)) as executor:
+                query_results = list(executor.map(_search_single_query, parsed_queries))
+        else:
+            query_results = [_search_single_query(parsed_queries[0])]
             
         # 2. Group candidates by video
         video_grouped = {}
@@ -1169,9 +1567,18 @@ class RetrievalSystem:
 
     def _get_keyframes_in_shot(self, video_id: str, start_frame: int, end_frame: int) -> list:
         """
-        List all keyframe indices from data/keyframe/<video_id>/ that fall within [start_frame, end_frame].
-        Returns sorted list of keyframe indices.
+        Return sorted list of keyframe indices for video_id that fall within [start_frame, end_frame].
+        Uses in-memory pre-indexed keyframes with O(log K) binary search for maximum speed.
         """
+        if hasattr(self, "video_keyframes") and self.video_keyframes:
+            kfs = self.video_keyframes.get(video_id)
+            if kfs:
+                i = bisect.bisect_left(kfs, start_frame)
+                j = bisect.bisect_right(kfs, end_frame)
+                return kfs[i:j]
+            return []
+
+        # Fallback to disk if video_keyframes is not populated
         kf_dir = self.data_dir / "keyframe" / video_id
         if not kf_dir.exists() or not kf_dir.is_dir():
             return []
@@ -1188,9 +1595,10 @@ class RetrievalSystem:
         keyframes.sort()
         return keyframes
 
+
     def caption_search(self, query: str, top_k: int = 500, score_threshold: float = 0.0,
                        limit: int = 100, ocr_query=None, audio_query=None, objects: list = None,
-                       dense_weight: float = None, bm25_weight: float = None):
+                       dense_weight: float = None, bm25_weight: float = None, text_filters = None):
         """
         Hybrid semantic & lexical search over shot captions.
         1. Encodes query with Qwen3_Embedding, searches each caption aspect vector in Qdrant.
@@ -1205,14 +1613,26 @@ class RetrievalSystem:
         if not query or not query.strip():
             return []
 
-        # Encode query using the caption embedding model (Qwen3_Embedding, 1024-dim)
+        # Auto-translate English query to Vietnamese if needed (Qwen3 & BM25 alignment)
+        from config import AUTO_TRANSLATE_EN_CAPTION
+        from utils.translator import translate_query_to_vi_if_needed
+
+        search_query = query
+        translated_query_str = None
+        if AUTO_TRANSLATE_EN_CAPTION:
+            trans_text, was_en = translate_query_to_vi_if_needed(query)
+            if was_en:
+                logger.info(f"🌐 Caption search auto-translated EN query: '{query}' -> '{trans_text}'")
+                search_query = trans_text
+                translated_query_str = trans_text
+
+        # Encode query using the caption embedding model (Qwen3_Embedding, 1024-dim) with LRU caching
         caption_encoder_name = "Qwen3_Embedding"
         if caption_encoder_name not in self.text_encoders:
             logger.error(f"Caption encoder '{caption_encoder_name}' not initialized. Cannot perform caption search.")
             return []
 
-        encoded = self.text_encoders[caption_encoder_name](query)
-        query_vector = encoded[0].tolist()
+        query_vector = self._cached_encode(caption_encoder_name, search_query)[0].tolist()
 
         # Build OCR/transcript filter ranges
         ocr_ranges = None
@@ -1225,34 +1645,55 @@ class RetrievalSystem:
         if audio_query:
             transcript_ranges = self._get_transcript_filter_ranges(audio_query)
 
-        # ─── 1. Dense Aspect Vector Search (Qdrant) ──────────────────────────
+        text_filter_ranges = None
+        if text_filters:
+            text_filter_ranges = self._get_text_filter_ranges(text_filters)
+            if not text_filter_ranges:
+                return []
+
+        # ─── 1. Concurrent Dense Aspect Vector Search (Qdrant) & Lexical (BM25) ───
         point_aspect_raw = {}
         all_payloads = {}
         all_raw_aspect_scores = []
 
-        for aspect in CAPTION_ASPECT_KEYS:
+        def _search_aspect(asp):
             try:
-                search_result = self.qdrant_client.query_points(
+                res = self.qdrant_client.query_points(
                     collection_name=QDRANT_SHOT_CAPTION_COLLECTION_NAME,
                     query=query_vector,
-                    using=aspect,
+                    using=asp,
                     limit=top_k,
-                    search_params=SearchParams(exact=True),
+                    search_params=SearchParams(exact=False, hnsw_ef=HNSW_EF_SEARCH),
                     with_payload=True
                 ).points
+                return asp, res
             except Exception as e:
-                logger.warning(f"Caption search failed for aspect '{aspect}': {e}")
-                continue
+                logger.warning(f"Caption search failed for aspect '{asp}': {e}")
+                return asp, []
 
-            if not search_result:
-                continue
+        def _search_bm25():
+            try:
+                return search_caption_bm25(self.es_client, ES_CAPTION_INDEX_NAME, search_query, size=top_k)
+            except Exception as e:
+                logger.warning(f"BM25 caption search failed: {e}")
+                return []
 
-            for hit in search_result:
-                all_payloads[hit.id] = hit.payload
-                if hit.id not in point_aspect_raw:
-                    point_aspect_raw[hit.id] = {}
-                point_aspect_raw[hit.id][aspect] = hit.score
-                all_raw_aspect_scores.append(hit.score)
+        with ThreadPoolExecutor(max_workers=len(CAPTION_ASPECT_KEYS) + 1) as executor:
+            aspect_futures = [executor.submit(_search_aspect, asp) for asp in CAPTION_ASPECT_KEYS]
+            bm25_future = executor.submit(_search_bm25)
+
+            for f in aspect_futures:
+                aspect, search_result = f.result()
+                if not search_result:
+                    continue
+                for hit in search_result:
+                    all_payloads[hit.id] = hit.payload
+                    if hit.id not in point_aspect_raw:
+                        point_aspect_raw[hit.id] = {}
+                    point_aspect_raw[hit.id][aspect] = hit.score
+                    all_raw_aspect_scores.append(hit.score)
+
+            bm25_hits = bm25_future.result()
 
         # Global Min-Max Normalization across all captions of all aspects
         dense_shot_scores = {}
@@ -1269,14 +1710,9 @@ class RetrievalSystem:
                 dense_shot_scores[point_id] = norm_score
                 best_aspects[point_id] = best_asp
 
-        # ─── 2. Sparse Lexical Search (Elasticsearch BM25) ────────────────────
+        # ─── 2. Sparse Lexical Search Processing (Elasticsearch BM25) ────────
         bm25_shot_scores = {}
         bm25_data = {}
-        try:
-            bm25_hits = search_caption_bm25(self.es_client, ES_CAPTION_INDEX_NAME, query, size=top_k)
-        except Exception as e:
-            logger.warning(f"BM25 caption search failed: {e}")
-            bm25_hits = []
 
         if bm25_hits:
             b_scores = [h["bm25_score"] for h in bm25_hits]
@@ -1358,6 +1794,17 @@ class RetrievalSystem:
                     filtered[pid] = score
             final_scores = filtered
 
+        # Apply Text filter
+        if text_filter_ranges is not None:
+            filtered = {}
+            for pid, score in final_scores.items():
+                payload = all_payloads.get(pid, {})
+                vid = payload.get("video_id")
+                rep_frame = payload.get("representative_frame", payload.get("keyframe_idx", 0))
+                if self._frame_in_text_filter_ranges(vid, rep_frame, text_filter_ranges) > 0.0:
+                    filtered[pid] = score
+            final_scores = filtered
+
         # ─── 5. Rank and format results ──────────────────────────────────────
         ranked = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
 
@@ -1380,7 +1827,7 @@ class RetrievalSystem:
             if not best_caption:
                 best_caption = payload.get("caption_text", "")
 
-            results.append({
+            item = {
                 "video_id": video_id,
                 "keyframe_index": rep_frame,
                 "score": score,
@@ -1395,7 +1842,11 @@ class RetrievalSystem:
                 "best_aspect_caption": best_caption,
                 "aspects": aspects_data,
                 "result_type": "caption",
-            })
+            }
+            if translated_query_str:
+                item["translated_query"] = translated_query_str
+
+            results.append(item)
 
             if len(results) >= limit:
                 break
@@ -1406,11 +1857,13 @@ class RetrievalSystem:
     def fused_search(self, query: str, model_names: list = None, objects: list = None,
                      top_k: int = 1000, score_threshold: float = 0.0,
                      limit: int = 100, ocr_query=None, audio_query=None,
-                     keyframe_weight: float = None, caption_weight: float = None):
+                     keyframe_weight: float = None, caption_weight: float = None,
+                     text_filters = None, group_by_shot: bool = False):
         """
         Fused search: combine keyframe embedding search and caption embedding search.
-        For each keyframe in the union of both result sets, compute:
-          fused_score = w_kf * normalized_keyframe_score + w_cap * normalized_caption_score
+        For each keyframe in the union of both result sets:
+          - If matched by both modalities: combine with multimodal synergy boost (>= max(kf, cap))
+          - If matched by only one modality: preserve original normalized score (not halved)
         Caption search expands shot results to ALL keyframes in that shot's range.
         """
         from config import KEYFRAME_SEARCH_WEIGHT, CAPTION_SEARCH_WEIGHT
@@ -1418,22 +1871,41 @@ class RetrievalSystem:
         w_kf = keyframe_weight if keyframe_weight is not None else KEYFRAME_SEARCH_WEIGHT
         w_cap = caption_weight if caption_weight is not None else CAPTION_SEARCH_WEIGHT
 
-        logger.info(f"Performing fused search for: '{query}' (kf_weight={w_kf}, cap_weight={w_cap})")
+        logger.info(f"Performing fused search for: '{query}' (kf_weight={w_kf}, cap_weight={w_cap}, text_filters={text_filters})")
 
-        # 1. Run keyframe search (returns per-keyframe results)
-        kf_results = self.semantic_search(
-            query, model_names=model_names, objects=objects,
-            top_k=top_k, score_threshold=0.0,
-            limit=top_k, group_by_shot=False,
-            ocr_query=ocr_query, audio_query=audio_query
-        )
+        # Pre-compute text_filter_ranges once for both modalities
+        text_filter_ranges = None
+        if text_filters:
+            text_filter_ranges = self._get_text_filter_ranges(text_filters, model_names=model_names)
+            if not text_filter_ranges:
+                logger.info("No matches for text_filters in fused_search. Returning empty results.")
+                return []
 
-        # 2. Run caption search (returns per-shot results)
-        cap_results = self.caption_search(
-            query, top_k=top_k, score_threshold=0.0,
-            limit=top_k, ocr_query=ocr_query, audio_query=audio_query,
-            objects=objects
-        )
+        # 1 & 2. Run keyframe search and caption search concurrently in parallel
+        def _run_kf():
+            return self.semantic_search(
+                query, model_names=model_names, objects=objects,
+                top_k=top_k, score_threshold=0.0,
+                limit=top_k, group_by_shot=False,
+                ocr_query=ocr_query, audio_query=audio_query,
+                text_filters=text_filter_ranges
+            )
+
+        def _run_cap():
+            return self.caption_search(
+                query, top_k=top_k, score_threshold=0.0,
+                limit=top_k, ocr_query=ocr_query, audio_query=audio_query,
+                objects=objects,
+                text_filters=text_filter_ranges
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            kf_future = executor.submit(_run_kf)
+            cap_future = executor.submit(_run_cap)
+            kf_results = kf_future.result()
+            cap_results = cap_future.result()
+
+        cap_translated_query = next((r["translated_query"] for r in cap_results if "translated_query" in r), None)
 
         # 3. Build keyframe score maps
 
@@ -1502,9 +1974,26 @@ class RetrievalSystem:
         fused_results = []
         for key in all_keys:
             vid, kf_idx = key
+            in_kf = key in kf_score_map
+            in_cap = key in cap_score_map
             kf_s = kf_norm.get(key, 0.0)
             cap_s = cap_norm.get(key, 0.0)
-            fused = w_kf * kf_s + w_cap * cap_s
+
+            if in_kf and in_cap:
+                # Keyframe xuất hiện ở cả 2 phương thức: cộng hưởng đa phương thức (multimodal synergy)
+                # Đảm bảo điểm kết hợp không bị kéo tụt xuống thấp hơn điểm của từng nguồn đơn lẻ
+                total_w = w_kf + w_cap
+                weighted_avg = (w_kf * kf_s + w_cap * cap_s) / total_w if total_w > 0 else (kf_s + cap_s) / 2.0
+                base_score = max(weighted_avg, max(kf_s, cap_s))
+                # Điểm thưởng cộng hưởng khi cả 2 nguồn đều xác nhận
+                synergy_bonus = 0.15 * min(kf_s, cap_s)
+                fused = min(1.0, base_score + synergy_bonus)
+            elif in_kf:
+                # Chỉ xuất hiện ở keyframe embedding search -> giữ nguyên điểm, không bị chia đôi
+                fused = kf_s
+            else:
+                # Chỉ xuất hiện ở caption search -> giữ nguyên điểm, không bị chia đôi
+                fused = cap_s
 
             if fused < score_threshold:
                 continue
@@ -1526,7 +2015,7 @@ class RetrievalSystem:
             extra = kf_extra.get(key, {})
             cap_info = cap_shot_info.get(key, {})
 
-            fused_results.append({
+            fused_item = {
                 "video_id": vid,
                 "keyframe_index": kf_idx,
                 "score": fused,
@@ -1540,9 +2029,47 @@ class RetrievalSystem:
                 "best_aspect": cap_info.get("best_aspect", ""),
                 "best_aspect_caption": cap_info.get("best_aspect_caption", ""),
                 "result_type": "fused",
-            })
+            }
+            if cap_translated_query:
+                fused_item["translated_query"] = cap_translated_query
+
+            fused_results.append(fused_item)
 
         fused_results.sort(key=lambda x: x["score"], reverse=True)
+
+        if group_by_shot:
+            shot_dict = {}
+            for item in fused_results:
+                key = (item["video_id"], item["shot_start_frame"], item["shot_end_frame"])
+                if key not in shot_dict:
+                    shot_dict[key] = []
+                shot_dict[key].append(item)
+
+            grouped_results = []
+            for (vid, start, end), items in shot_dict.items():
+                avg_score = sum(i["score"] for i in items) / len(items)
+                items.sort(key=lambda x: x["keyframe_index"])
+                anchor = items[0]
+                grouped_results.append({
+                    "type": "shot",
+                    "video_id": vid,
+                    "score": avg_score,
+                    "frames": items,
+                    "display_frames": items,
+                    "keyframe_index": anchor["keyframe_index"],
+                    "shot_start_frame": start,
+                    "shot_end_frame": end,
+                    "result_type": "fused",
+                    "ocr_text": anchor.get("ocr_text", ""),
+                    "audio_text": anchor.get("audio_text", ""),
+                    "caption_text": anchor.get("caption_text", ""),
+                    "best_aspect": anchor.get("best_aspect", ""),
+                    "best_aspect_caption": anchor.get("best_aspect_caption", ""),
+                })
+
+            grouped_results.sort(key=lambda x: x["score"], reverse=True)
+            return grouped_results[:limit]
+
         return fused_results[:limit]
 
 if __name__ == "__main__":

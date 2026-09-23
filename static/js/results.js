@@ -151,23 +151,41 @@ export function displayResults(results, groupMode = "none") {
     return;
   }
 
+  // Display translation banner if English query was translated to Vietnamese
+  if (results[0] && results[0].translated_query) {
+    const banner = document.createElement("div");
+    banner.style.cssText = "grid-column: 1 / -1; width: 100%; box-sizing: border-box; background: rgba(56, 139, 253, 0.12); border: 1px solid #1f6feb; border-radius: 6px; padding: 10px 14px; margin-bottom: 6px; color: #c9d1d9; font-size: 13px; display: flex; align-items: center; gap: 8px;";
+    banner.innerHTML = `<span style="font-size:16px;">🌐</span><span><strong>Đã tự động dịch query sang Tiếng Việt:</strong> <em style="color:#58a6ff; font-weight:600;">"${results[0].translated_query}"</em></span>`;
+    elements.resultsContainer.appendChild(banner);
+  }
+
   // Check if these are caption-only results
   const isCaptionResult = results[0] && results[0].result_type === "caption";
-  const isFusedResult = results[0] && results[0].result_type === "fused";
-
   const isGrouped = Boolean(results[0] && results[0].frames);
+  const isTemporal = Boolean(results[0] && results[0].sequence_score !== undefined);
 
   if (isCaptionResult) {
-    displayCaptionResults(results);
+    if (groupMode === "video") {
+      const groupedData = groupResultsByVideo(results);
+      displaySequenceResults(groupedData);
+    } else {
+      displayCaptionResults(results);
+    }
   } else if (groupMode === "video") {
-    const groupedData = isGrouped ? groupSequencesByVideo(results) : groupResultsByVideo(results);
+    const groupedData = (isGrouped && isTemporal)
+      ? groupSequencesByVideo(results)
+      : groupResultsByVideo(isGrouped ? flattenGroupedResults(results) : results);
     displaySequenceResults(groupedData);
   } else if (groupMode === "shot" || groupMode === true) {
     const flatData = isGrouped ? flattenGroupedResults(results) : results;
     const groupedData = groupResultsByShot(flatData);
     displaySequenceResults(groupedData);
-  } else if (isGrouped) {
+  } else if (isGrouped && isTemporal) {
     displaySequenceResults(results);
+  } else if (isGrouped) {
+    // When results were shot-grouped but user turned groupMode to "none", un-group and show flat keyframes
+    const flatData = flattenGroupedResults(results);
+    displayFlatResults(flatData);
   } else {
     displayFlatResults(results);
   }
@@ -203,10 +221,17 @@ function displayFlatResults(results) {
 
     const fpsStr = typeof item.fps === 'number' ? (Number.isInteger(item.fps) ? item.fps : item.fps.toFixed(2)) : item.fps;
 
-    // Fused search extra scores
-    const fusedScoreHTML = (item.result_type === "fused")
-      ? `<span style="color:#a371f7;">KF: ${(item.keyframe_score || 0).toFixed(3)}</span><span style="color:#f0883e;">Cap: ${(item.caption_score || 0).toFixed(3)}</span>`
-      : "";
+    // Fused search extra scores: show badges only for modalities that matched
+    let fusedBadges = [];
+    if (item.result_type === "fused") {
+      if (typeof item.keyframe_score === 'number' && item.keyframe_score > 0) {
+        fusedBadges.push(`<span style="color:#a371f7;">KF: ${item.keyframe_score.toFixed(3)}</span>`);
+      }
+      if (typeof item.caption_score === 'number' && item.caption_score > 0) {
+        fusedBadges.push(`<span style="color:#f0883e;">Cap: ${item.caption_score.toFixed(3)}</span>`);
+      }
+    }
+    const fusedScoreHTML = fusedBadges.join("");
 
     // Best aspect caption for fused results
     const captionSnippet = item.best_aspect_caption
@@ -332,8 +357,10 @@ function displaySequenceResults(results) {
     card.classList.add("shot-group-card"); // Tái sử dụng class này cho layout grid
     
     // Use display_frames (best frame per shot) for card thumbnails, fallback to frames
-    let displayFrames = seq.display_frames || seq.frames;
-    const numFrames = displayFrames.length;
+    let displayFrames = seq.display_frames || seq.frames || [];
+    const maxThumbs = 9;
+    const thumbsToRender = displayFrames.length > maxThumbs ? displayFrames.slice(0, maxThumbs) : displayFrames;
+    const numFrames = thumbsToRender.length;
     let gridStyle = "";
     if (numFrames > 4) {
       const cols = Math.ceil(Math.sqrt(numFrames));
@@ -343,7 +370,7 @@ function displaySequenceResults(results) {
     const gridClass = `items-${numFrames > 4 ? 4 : numFrames}`;
     
     let gridHTML = `<div class="shot-thumbnails-grid ${gridClass}" ${gridStyle}>`;
-    displayFrames.forEach((itm) => {
+    thumbsToRender.forEach((itm) => {
       gridHTML += `<div style="position:relative; width:100%; height:100%;">
         <img src="/keyframes/${itm.video_id}/keyframe_${itm.keyframe_index}.webp" loading="lazy" style="width:100%; height:100%; object-fit:cover;">
         <span style="position:absolute; bottom:2px; right:2px; background:rgba(0,0,0,0.7); color:white; font-size:10px; padding:2px; border-radius:2px;">${itm.keyframe_index}</span>

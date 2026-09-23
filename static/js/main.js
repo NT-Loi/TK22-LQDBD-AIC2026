@@ -48,18 +48,26 @@ document.addEventListener("DOMContentLoaded", async () => {
       const data = await res.json();
       const modelsSelect = document.getElementById("models-select");
       if (modelsSelect) {
-        modelsSelect.innerHTML = '<option value="all" selected>All</option>';
+        modelsSelect.innerHTML = '<option value="all">All</option>';
+        let hasSiglip2 = false;
         data.models.forEach(model => {
           if (model !== "score" && model !== "all") {
             const option = document.createElement("option");
             option.value = model;
             option.textContent = `${model}`;
+            if (model === "SigLIP2") {
+              option.selected = true;
+              hasSiglip2 = true;
+            }
             modelsSelect.appendChild(option);
           }
         });
+        if (!hasSiglip2 && modelsSelect.options.length > 0) {
+          modelsSelect.options[0].selected = true;
+        }
 
         // Add event listener for mutual exclusivity
-        let previousSelection = ["all"];
+        let previousSelection = hasSiglip2 ? ["SigLIP2"] : ["all"];
         modelsSelect.addEventListener("change", (e) => {
           const options = Array.from(modelsSelect.options);
           let currentSelection = options.filter(o => o.selected).map(o => o.value);
@@ -190,12 +198,26 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
     });
 
+    // 4. Thu thập các Text Query Filter kèm level của từng dòng
+    const textFilters = [];
+    const textFilterRows = elements.textFilterInputsContainer ? elements.textFilterInputsContainer.querySelectorAll(".text-filter-row") : [];
+    textFilterRows.forEach((row) => {
+      const input = row.querySelector(".text-filter-query-input");
+      const levelSelect = row.querySelector(".text-filter-level-select");
+      const text = input ? input.value.trim() : "";
+      const level = levelSelect ? levelSelect.value : "frame";
+      if (text) {
+        textFilters.push({ text: text, level: level });
+      }
+    });
+
     const thresholdInput = document.getElementById("score-threshold")?.value;
     const parsedThreshold = parseFloat(thresholdInput);
     const scoreThreshold = isNaN(parsedThreshold) ? 0.0 : parsedThreshold;
 
     const queryData = {
       text_queries: textQueries, // List of objects/strings
+      text_filters: textFilters, // List of objects: [{text: "...", level: "frame"|"video"}]
       anchor_index: anchorIndex, // Index of query used for sorting
       models: selectedModels,
       objects: getObjectQueries(),
@@ -213,9 +235,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       queryData.text_queries.length === 0 &&
       queryData.objects.length === 0 &&
       queryData.ocr_query.length === 0 &&
-      queryData.audio.length === 0
+      queryData.audio.length === 0 &&
+      queryData.text_filters.length === 0
     ) {
-      alert("Please enter at least one text query, OCR filter, Audio filter, or Object filter.");
+      alert("Please enter at least one text query, text filter, OCR filter, Audio filter, or Object filter.");
       return;
     }
 
@@ -386,6 +409,46 @@ function initDynamicInputs() {
       }
     });
   }
+
+  // Dynamic Text Filter Inputs
+  if (elements.addTextFilterBtn && elements.textFilterInputsContainer) {
+    elements.addTextFilterBtn.addEventListener("click", () => {
+      const rows = elements.textFilterInputsContainer.querySelectorAll(".text-filter-row");
+      const newIndex = rows.length;
+      const div = document.createElement("div");
+      div.className = "search-row text-filter-row";
+      div.dataset.index = newIndex;
+      div.style.marginTop = "5px";
+
+      div.innerHTML = `
+        <input type="text" name="text_filter_${newIndex}" class="sidebar-input text-filter-query-input" placeholder="Filter text (e.g. white car)..." autocomplete="off">
+        <select name="text_filter_level_${newIndex}" class="sidebar-select-sm text-filter-level-select" style="width: 72px; flex-shrink: 0;">
+          <option value="frame" selected>Frame</option>
+          <option value="video">Video</option>
+        </select>
+        <button type="button" class="remove-text-filter-btn" style="background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer; padding:0 8px;">X</button>
+      `;
+
+      elements.textFilterInputsContainer.appendChild(div);
+      updateRemoveTextFilterButtons();
+    });
+
+    elements.textFilterInputsContainer.addEventListener("click", (e) => {
+      if (e.target.classList.contains("remove-text-filter-btn")) {
+        e.target.parentElement.remove();
+        updateRemoveTextFilterButtons();
+      }
+    });
+  }
+}
+
+function updateRemoveTextFilterButtons() {
+  if (!elements.textFilterInputsContainer) return;
+  const rows = elements.textFilterInputsContainer.querySelectorAll(".text-filter-row");
+  rows.forEach((row) => {
+    const btn = row.querySelector(".remove-text-filter-btn");
+    if (btn) btn.style.display = rows.length > 1 ? "block" : "none";
+  });
 }
 
 function updateRemoveOcrButtons() {
