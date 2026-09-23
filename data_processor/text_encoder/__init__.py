@@ -24,6 +24,21 @@ import numpy as np
 import torch.nn.functional as F
 from typing import Union, List
 
+# helper function for Qwen3EmbeddingTextEncoder
+from torch import Tensor
+def last_token_pool(last_hidden_states: Tensor,
+                attention_mask: Tensor) -> Tensor:
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+def get_detailed_instruct(task_description: str, query: str) -> str:
+    return f'Instruct: {task_description}\nQuery:{query}'
+
 class TextEncoder(nn.Module):
     def __init__(self, device: str=None):
         super().__init__()
@@ -73,7 +88,7 @@ class SigLIPTextEncoder(TextEncoder):
         model_id = "google/siglip-so400m-patch14-384"
         logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
         from transformers import AutoProcessor, SiglipModel
-        self.model = SiglipModel.from_pretrained(model_id)
+        self.model = SiglipModel.from_pretrained(model_id, token=hf_token)
 
         del self.model.vision_model
 
@@ -83,8 +98,11 @@ class SigLIPTextEncoder(TextEncoder):
 
         logger.info("SigLIPTextEncoder initialized successfully.")
 
-    def forward(self, query: str):
-        inputs = self.processor(text=[query], padding="max_length", max_length=64, truncation=True, return_tensors="pt").to(self.device)
+        self.max_length = 64
+
+    def forward(self, query: str, max_length: int = None):
+        max_length = max_length or self.max_length
+        inputs = self.processor(text=[query], padding="max_length", max_length=max_length, truncation=True, return_tensors="pt").to(self.device)
         with torch.no_grad():
             out = self.model.get_text_features(**inputs)
             text_features = out.pooler_output if hasattr(out, "pooler_output") else out
@@ -101,7 +119,7 @@ class SigLIP2TextEncoder(TextEncoder):
         model_id = "google/siglip2-giant-opt-patch16-384"
         logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
         from transformers import AutoProcessor, SiglipModel
-        self.model = SiglipModel.from_pretrained(model_id)
+        self.model = SiglipModel.from_pretrained(model_id, token=hf_token)
 
         del self.model.vision_model
 
@@ -110,8 +128,11 @@ class SigLIP2TextEncoder(TextEncoder):
         self.processor = AutoProcessor.from_pretrained(model_id)
         logger.info("SigLIP2TextEncoder initialized successfully.")
 
-    def forward(self, query: str):
-        inputs = self.processor(text=[query], padding="max_length", truncation=True, return_tensors="pt").to(self.device)
+        self.max_length = 64
+
+    def forward(self, query: str, max_length: int = None):
+        max_length = max_length or self.max_length
+        inputs = self.processor(text=[query], padding="max_length", max_length=max_length, truncation=True, return_tensors="pt").to(self.device)
         with torch.no_grad():
             out = self.model.get_text_features(**inputs)
             text_features = out.pooler_output if hasattr(out, "pooler_output") else out
@@ -143,21 +164,26 @@ class Qwen3VLEmbeddingTextEncoder(TextEncoder):
 
         logger.info("Qwen3VLTextEncoder initialized successfully.")
 
-    def forward(self, query: Union[str, List[str]]):
+        self.task = "Retrieve video keyframes or images that depict the scene described in the query."
+        self.max_length = 2048
+
+    def forward(self, query: Union[str, List[str]], task: str = None, max_length: int = None):
         if isinstance(query, str):
             queries = [query]
         else:
             queries = query
 
         texts = []
+        task = task or self.task
         for q in queries:
             messages = [
-                {"role": "system", "content": [{"type": "text", "text": "Represent the user's input."}]},
+                {"role": "system", "content": [{"type": "text", "text": f"{task}"}]},
                 {"role": "user", "content": [{"type": "text", "text": q}]}
             ]
             texts.append(self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
 
-        inputs = self.processor(text=texts, padding=True, truncation=True, max_length=1024, return_tensors="pt").to(self.device)
+        max_length = max_length or self.max_length
+        inputs = self.processor(text=texts, padding=True, truncation=True, max_length=max_length, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -170,7 +196,7 @@ class Qwen3VLEmbeddingTextEncoder(TextEncoder):
         if self.device == "cuda":
             text_features = text_features.cpu()
 
-        return F.normalize(text_features.float(), p=2, dim=-1).detach().numpy().astype(np.float32)
+        return F.normalize(text_features.float(), p=2, dim=-1).detach().cpu().numpy().astype(np.float32)
 
 class FGCLIP2TextEncoder(TextEncoder):
     def __init__(self, device: str = None, model_id: str = "qihoo360/fg-clip2-so400m"):
@@ -233,8 +259,49 @@ class FGCLIP2TextEncoder(TextEncoder):
             
         return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32)
 
+class Qwen3EmbeddingTextEncoder(TextEncoder):
+    def __init__(self, device: str = None, model_id: str = "Qwen/Qwen3-Embedding-0.6B"):
+        super().__init__(device)
+
+        logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
+        from transformers import AutoTokenizer, AutoModel
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left')
+        self.model = AutoModel.from_pretrained(model_id, token=hf_token)
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        logger.info("Qwen3EmbeddingTextEncoder initialized successfully.")
+
+        self.task = "Given a video search query, retrieve relevant video shot descriptions that match the query"
+        self.max_length = 2048
+
+    def forward(self, query: Union[str, List[str]], task: str = None, max_length: int = None):
+        queries = [query] if isinstance(query, str) else query
+        task = task or self.task
+        formatted_queries = [
+            f"Instruct: {task}\nQuery: {q.strip()}" for q in queries
+        ]
+        max_length = max_length or self.max_length
+
+        # Tokenize the input texts
+        batch_dict = self.tokenizer(
+            formatted_queries,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        batch_dict.to(self.model.device)
+        with torch.no_grad():
+            outputs = self.model(**batch_dict)
+            text_features = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
+
+        if self.device == "cuda":
+            text_features = text_features.cpu()
+
+        return F.normalize(text_features.float(), p=2, dim=-1).detach().cpu().numpy().astype(np.float32)
+
 if __name__ == "__main__":
-    encoder = FGCLIP2TextEncoder()
+    encoder = SigLIP2TextEncoder()
     sample_text = "A person riding a horse on a beach."
     features = encoder(sample_text)
     print("Features:", features)
