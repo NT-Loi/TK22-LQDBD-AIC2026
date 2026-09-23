@@ -1,5 +1,5 @@
 import { elements } from "./elements.js";
-import { openModal } from "./video-player.js";
+import { openModal, openCaptionModal } from "./video-player.js";
 import { submitResultAPI } from "./api.js";
 
 // Helper: Shuffle array
@@ -151,9 +151,15 @@ export function displayResults(results, groupMode = "none") {
     return;
   }
 
+  // Check if these are caption-only results
+  const isCaptionResult = results[0] && results[0].result_type === "caption";
+  const isFusedResult = results[0] && results[0].result_type === "fused";
+
   const isGrouped = Boolean(results[0] && results[0].frames);
 
-  if (groupMode === "video") {
+  if (isCaptionResult) {
+    displayCaptionResults(results);
+  } else if (groupMode === "video") {
     const groupedData = isGrouped ? groupSequencesByVideo(results) : groupResultsByVideo(results);
     displaySequenceResults(groupedData);
   } else if (groupMode === "shot" || groupMode === true) {
@@ -161,7 +167,6 @@ export function displayResults(results, groupMode = "none") {
     const groupedData = groupResultsByShot(flatData);
     displaySequenceResults(groupedData);
   } else if (isGrouped) {
-    // Default: Show individual temporal sequence pairs as separate cards (even if same video)
     displaySequenceResults(results);
   } else {
     displayFlatResults(results);
@@ -198,6 +203,16 @@ function displayFlatResults(results) {
 
     const fpsStr = typeof item.fps === 'number' ? (Number.isInteger(item.fps) ? item.fps : item.fps.toFixed(2)) : item.fps;
 
+    // Fused search extra scores
+    const fusedScoreHTML = (item.result_type === "fused")
+      ? `<span style="color:#a371f7;">KF: ${(item.keyframe_score || 0).toFixed(3)}</span><span style="color:#f0883e;">Cap: ${(item.caption_score || 0).toFixed(3)}</span>`
+      : "";
+
+    // Best aspect caption for fused results
+    const captionSnippet = item.best_aspect_caption
+      ? `<div style="font-size:11px; color:#a371f7; margin-top:3px; max-height:2.6em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.best_aspect_caption}">📝 <strong>${item.best_aspect || 'Caption'}:</strong> ${item.best_aspect_caption}</div>`
+      : "";
+
     // 2. Nội dung Card
     const infoHTML = `
             <img src="${imageUrl}" class="result-item-image" onerror="this.onerror=null;this.src='/static/placeholder.png';">
@@ -209,12 +224,14 @@ function displayFlatResults(results) {
                       .map((score) => {
                         const val = item[score] ? item[score].toFixed(3) : null;
                         return val
-                          ? `<span>${scoreLabels[score]}: ${val}</span>`
+                          ? `<span>${"Score"}: ${val}</span>`
                           : "";
                       })
                       .join("")}
+                    ${fusedScoreHTML}
                     ${item.frames ? `<span style="color:#58a6ff; font-weight:bold;">🖼️ Keyframes: ${item.frames.length}</span>` : ""}
                 </div>
+                ${captionSnippet}
                 ${item.ocr_text ? `<div style="font-size:11px; color:#58a6ff; margin-top:3px; max-height:2.6em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.ocr_text}">🔍 <strong>OCR:</strong> ${item.ocr_text}</div>` : ""}
                 ${item.audio_text ? `<div style="font-size:11px; color:#e3b341; margin-top:3px; max-height:2.6em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word;" title="${item.audio_text}">🎙️ <strong>Audio:</strong> ${item.audio_text}</div>` : ""}
                 ${item.temporal_sequence ? `<div style="font-size:11px; color:blue; margin-top:2px; font-weight:bold;">🔗 Sequence: ${item.temporal_sequence.length} events</div>` : ""}
@@ -378,6 +395,56 @@ function displaySequenceResults(results) {
     elements.resultsContainer.appendChild(card);
   });
 }
+
+// --- CAPTION SEARCH RESULTS ---
+function displayCaptionResults(results) {
+  results.forEach((item) => {
+    const card = document.createElement("div");
+    card.classList.add("result-item");
+    card.dataset.videoId = item.video_id;
+    card.dataset.keyframeIndex = item.keyframe_index;
+
+    const imageUrl = `/keyframes/${item.video_id}/keyframe_${item.keyframe_index}.webp`;
+    const fpsStr = typeof item.fps === 'number' ? (Number.isInteger(item.fps) ? item.fps : item.fps.toFixed(2)) : (item.fps || 25);
+
+    // Best aspect caption (only show the highest scoring aspect)
+    const bestAspectLabel = item.best_aspect ? item.best_aspect.replace(/_/g, ' ') : 'Caption';
+    const captionText = item.best_aspect_caption || item.caption_text || '';
+    const captionSnippet = captionText
+      ? `<div style="font-size:11px; color:#a371f7; margin-top:3px; max-height:3.9em; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; word-break:break-word;" title="${captionText.replace(/"/g, '&quot;')}">📝 <strong>${bestAspectLabel}:</strong> ${captionText}</div>`
+      : '';
+
+    const shotRange = (item.shot_start_frame !== undefined && item.shot_end_frame !== undefined)
+      ? `<span style="color:#8b949e; font-size:11px;">Shot: ${item.shot_start_frame}–${item.shot_end_frame}</span>`
+      : '';
+
+    card.innerHTML = `
+      <img src="${imageUrl}" class="result-item-image" onerror="this.onerror=null;this.src='/static/placeholder.png';">
+      <div class="result-info">
+        <h3>${item.video_id} / ${item.keyframe_index}</h3>
+        <div class="result-scores">
+          <span title="Dense: ${(item.dense_score || 0).toFixed(3)} | BM25: ${(item.bm25_score || 0).toFixed(3)}">Score: ${item.score.toFixed(3)}</span>
+          ${shotRange}
+        </div>
+        ${captionSnippet}
+        <button class="card-submit-btn" type="button">Submit</button>
+      </div>`;
+
+    // Submit
+    const submitBtn = card.querySelector(".card-submit-btn");
+    submitBtn.addEventListener("click", (e) => handleSubmit(e, item));
+
+    // Click -> open modal with ALL keyframes in this shot
+    card.addEventListener("click", (e) => {
+      if (e.target.tagName.toLowerCase() === 'button') return;
+      const fps = parseFloat(item.fps) || 25;
+      openCaptionModal(item, fps);
+    });
+
+    elements.resultsContainer.appendChild(card);
+  });
+}
+
 async function handleSubmit(e, item) {
   e.stopPropagation();
   const sessionId = localStorage.getItem("sessionId");

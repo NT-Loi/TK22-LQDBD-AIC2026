@@ -32,4 +32,8 @@ export const elements = {
   get jumpVideoInput() { return document.getElementById("jump-video-id"); },
   get jumpKeyframeInput() { return document.getElementById("jump-keyframe-idx"); },
   get jumpBtn() { return document.getElementById("jump-video-btn"); },
+  get searchModeSelect() { return document.getElementById("search-mode-select"); },
+  get captionWeightRow() { return document.getElementById("caption-weight-row"); },
+  get captionWeightSlider() { return document.getElementById("caption-weight-slider"); },
+  get captionWeightValue() { return document.getElementById("caption-weight-value"); },
 };

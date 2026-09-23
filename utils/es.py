@@ -399,3 +399,227 @@ def fuzzy_search_transcript(es_client: Elasticsearch, index_name: str, query: st
 
     return results
 
+
+# ─── Shot Caption ES functions ──────────────────────────────────────────────
+
+def setup_caption_index(es_client: Elasticsearch, index_name: str, overwrite: bool = False):
+    """
+    Create the Elasticsearch index for shot captions with custom analyzer
+    supporting exact and case/accent-insensitive text matching.
+    """
+    if es_client.indices.exists(index=index_name):
+        if overwrite:
+            logger.info(f"ES caption index '{index_name}' exists. Deleting...")
+            es_client.indices.delete(index=index_name)
+        else:
+            logger.info(f"ES caption index '{index_name}' already exists. Skipping creation.")
+            return
+
+    index_body = {
+        "settings": {
+            "analysis": {
+                "analyzer": {
+                    "caption_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "standard",
+                        "filter": ["lowercase", "asciifolding"]
+                    }
+                }
+            }
+        },
+        "mappings": {
+            "properties": {
+                "video_id": {"type": "keyword"},
+                "shot_idx": {"type": "integer"},
+                "start_frame": {"type": "integer"},
+                "end_frame": {"type": "integer"},
+                "representative_frame": {"type": "integer"},
+                "start_sec": {"type": "float"},
+                "end_sec": {"type": "float"},
+                "caption_text": {
+                    "type": "text",
+                    "analyzer": "caption_analyzer"
+                },
+                "aspects": {
+                    "properties": {
+                        "chu_the_hanh_dong": {"type": "text", "analyzer": "caption_analyzer"},
+                        "vat_the_dac_diem": {"type": "text", "analyzer": "caption_analyzer"},
+                        "boi_canh_khong_gian": {"type": "text", "analyzer": "caption_analyzer"},
+                        "chu_logo_man_hinh": {"type": "text", "analyzer": "caption_analyzer"},
+                        "goc_nhin_co_canh": {"type": "text", "analyzer": "caption_analyzer"},
+                        "dien_bien_thoi_gian": {"type": "text", "analyzer": "caption_analyzer"},
+                        "tong_the_canh_quay": {"type": "text", "analyzer": "caption_analyzer"}
+                    }
+                },
+                "ocr_detected": {
+                    "type": "text",
+                    "analyzer": "caption_analyzer"
+                },
+                "audio_transcript": {
+                    "type": "text",
+                    "analyzer": "caption_analyzer"
+                }
+            }
+        }
+    }
+
+    es_client.indices.create(index=index_name, body=index_body)
+    logger.info(f"ES caption index '{index_name}' created successfully.")
+
+
+def ingest_caption_to_es(es_client: Elasticsearch, index_name: str, caption_dir: str,
+                         caption_embedding_dir: str = None):
+    """
+    Ingest shot caption JSON files into Elasticsearch.
+    Uses representative frames from caption_embedding (.pt) if available,
+    otherwise defaults to middle keyframe from sampled_keyframes.
+    """
+    import torch
+    cap_path = Path(caption_dir)
+    if not cap_path.exists():
+        logger.warning(f"Caption directory '{cap_path}' not found.")
+        return 0
+
+    emb_path = Path(caption_embedding_dir) if caption_embedding_dir else None
+
+    total_indexed = 0
+    actions = []
+
+    json_files = sorted([f for f in os.listdir(cap_path) if f.endswith(".json")])
+    for file_name in tqdm(json_files, desc="📝 Captions to ES", unit="video"):
+        video_id = file_name.replace(".json", "")
+        json_file = cap_path / file_name
+
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                cap_json = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to read {json_file}: {e}")
+            continue
+
+        # Optionally load representative frames from .pt if present
+        rep_frames_map = {}
+        if emb_path and (emb_path / f"{video_id}.pt").exists():
+            try:
+                emb_data = torch.load(emb_path / f"{video_id}.pt", map_location="cpu", weights_only=True)
+                s_indices = emb_data.get("shot_indices", [])
+                r_frames = emb_data.get("representative_frames", [])
+                for s_i, r_f in zip(s_indices, r_frames):
+                    rep_frames_map[s_i] = r_f
+            except Exception:
+                pass
+
+        shots = cap_json.get("shots", [])
+        for s in shots:
+            shot_idx = s.get("shot_idx", 0)
+            start_frame = s.get("start_frame", 0)
+            end_frame = s.get("end_frame", 0)
+
+            # Representative frame
+            if shot_idx in rep_frames_map:
+                rep_frame = rep_frames_map[shot_idx]
+            else:
+                sampled = s.get("sampled_keyframes", [])
+                if sampled:
+                    rep_frame = sampled[len(sampled) // 2]
+                else:
+                    rep_frame = (start_frame + end_frame) // 2
+
+            ocr_text = " ".join(s.get("ocr_detected", [])) if isinstance(s.get("ocr_detected"), list) else str(s.get("ocr_detected", ""))
+            doc_id = f"{video_id}_{shot_idx}"
+
+            actions.append({
+                "_index": index_name,
+                "_id": doc_id,
+                "_source": {
+                    "video_id": video_id,
+                    "shot_idx": shot_idx,
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "representative_frame": rep_frame,
+                    "start_sec": s.get("start_sec", 0.0),
+                    "end_sec": s.get("end_sec", 0.0),
+                    "caption_text": s.get("caption_text", ""),
+                    "aspects": s.get("aspects", {}),
+                    "ocr_detected": ocr_text,
+                    "audio_transcript": s.get("audio_transcript", "")
+                }
+            })
+
+            if len(actions) >= 2000:
+                success, _ = bulk(es_client, actions, raise_on_error=False)
+                total_indexed += success
+                actions = []
+
+    if actions:
+        success, _ = bulk(es_client, actions, raise_on_error=False)
+        total_indexed += success
+
+    logger.info(f"Caption ingestion complete. Total shots indexed: {total_indexed}")
+    return total_indexed
+
+
+def search_caption_bm25(es_client: Elasticsearch, index_name: str, query: str, size: int = 1000):
+    """
+    Perform BM25 text search on shot captions across all aspect fields and caption text
+    with equal weights (as configured).
+    """
+    if not query or not query.strip():
+        return []
+
+    if not es_client.indices.exists(index=index_name):
+        logger.warning(f"Caption index '{index_name}' does not exist in Elasticsearch.")
+        return []
+
+    search_fields = [
+        "caption_text",
+        "aspects.tong_the_canh_quay",
+        "aspects.chu_the_hanh_dong",
+        "aspects.vat_the_dac_diem",
+        "aspects.boi_canh_khong_gian",
+        "aspects.chu_logo_man_hinh",
+        "aspects.goc_nhin_co_canh",
+        "aspects.dien_bien_thoi_gian",
+        "ocr_detected",
+        "audio_transcript"
+    ]
+
+    es_query = {
+        "multi_match": {
+            "query": query,
+            "fields": search_fields,
+            "type": "most_fields"
+        }
+    }
+
+    try:
+        response = es_client.search(
+            index=index_name,
+            query=es_query,
+            size=size
+        )
+    except Exception as e:
+        logger.error(f"ES caption BM25 search failed: {e}")
+        return []
+
+    results = []
+    for hit in response["hits"]["hits"]:
+        src = hit["_source"]
+        results.append({
+            "video_id": src["video_id"],
+            "shot_idx": src["shot_idx"],
+            "start_frame": src.get("start_frame", 0),
+            "end_frame": src.get("end_frame", 0),
+            "representative_frame": src.get("representative_frame", 0),
+            "start_sec": src.get("start_sec", 0.0),
+            "end_sec": src.get("end_sec", 0.0),
+            "caption_text": src.get("caption_text", ""),
+            "aspects": src.get("aspects", {}),
+            "ocr_detected": src.get("ocr_detected", ""),
+            "audio_transcript": src.get("audio_transcript", ""),
+            "bm25_score": float(hit["_score"])
+        })
+
+    return results
+
+

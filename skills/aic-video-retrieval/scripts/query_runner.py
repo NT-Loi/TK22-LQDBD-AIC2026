@@ -20,7 +20,7 @@ if sys.platform == "win32":
         pass
 
 # Add project root to sys.path so retrieval_system can be imported cleanly
-project_root = Path(__file__).resolve().parent.parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 def parse_args():
@@ -49,6 +49,8 @@ def parse_args():
                         help="Temporal frame distance to aggregate complementary sub-clauses in the same scene (default: 250)")
     parser.add_argument("--dedup-window", type=int, default=15,
                         help="Temporal frame window within same video to cluster near-duplicate frames into one candidate (default: 15, 0 to disable)")
+    parser.add_argument("--mode", choices=["keyframe", "caption", "both"], default="keyframe",
+                        help="Search target mode: 'keyframe' (visual embeddings), 'caption' (hybrid caption), or 'both' (fused)")
     parser.add_argument("--log-trace", action="store_true", default=True,
                         help="Print structured execution and reasoning trace")
     return parser.parse_args()
@@ -184,20 +186,36 @@ def main():
                 if len(results) >= args.limit:
                     break
         else:
-            print(f"[INFO] Executing semantic search for query: '{clauses[0]}'...")
+            print(f"[INFO] Executing {args.mode} search for query: '{clauses[0]}'...")
             fetch_limit = args.limit * 3 if args.dedup_window > 0 else args.limit
-            raw_results = system.semantic_search(
-                query=clauses[0],
-                model_names=args.models,
-                limit=fetch_limit,
-                ocr_query=args.ocr,
-                audio_query=args.audio,
-            )
+            if args.mode == "caption":
+                raw_results = system.caption_search(
+                    query=clauses[0],
+                    limit=fetch_limit,
+                    ocr_query=args.ocr,
+                    audio_query=args.audio,
+                )
+            elif args.mode == "both":
+                raw_results = system.fused_search(
+                    query=clauses[0],
+                    model_names=args.models,
+                    limit=fetch_limit,
+                    ocr_query=args.ocr,
+                    audio_query=args.audio,
+                )
+            else:
+                raw_results = system.semantic_search(
+                    query=clauses[0],
+                    model_names=args.models,
+                    limit=fetch_limit,
+                    ocr_query=args.ocr,
+                    audio_query=args.audio,
+                )
 
             selected_by_video = {}
             for r in raw_results:
                 vid = r.get("video_id")
-                fid = r.get("keyframe_idx")
+                fid = r.get("keyframe_index") if r.get("keyframe_index") is not None else r.get("keyframe_idx")
                 if vid is None or fid is None:
                     continue
 

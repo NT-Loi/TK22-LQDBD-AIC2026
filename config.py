@@ -11,21 +11,21 @@ ES_CAPTION_INDEX_NAME = "shot_captions"
 
 OCR_SOURCES = ["V6", "VL1.6"]
 
-VISION_EMBEDDING_DIM = {
-        # "CLIP_H14": 1024,
-        # "SigLIP": 1152,
-        "SigLIP2": 1536,
-        "Qwen3_VL_Embedding": 2048,
-        "FG_CLIP2": 1152
-    }
+VISION_MODELS = {
+    "CLIP_H14":           {"dim": 1024, "weight": 1.0},
+    "SigLIP":             {"dim": 1152, "weight": 1.0},
+    "SigLIP2":            {"dim": 1536, "weight": 1.0},
+    "Qwen3_VL_Embedding": {"dim": 2048, "weight": 1.0},
+    "FG_CLIP2":           {"dim": 1152, "weight": 1.0},
+}
 
-EMBEDDING_WEIGHTS = {
-        "CLIP_H14": 1.0,
-        "SigLIP": 1.0,
-        "SigLIP2": 1.0,
-        "Qwen3_VL_Embedding": 1.0,
-        "FG_CLIP2": 1.0,
-    }
+CAPTION_MODEL = "Qwen3_Embedding"
+
+VISION_EMBEDDING_DIM = {k: v["dim"] for k, v in VISION_MODELS.items()}
+EMBEDDING_WEIGHTS    = {k: v["weight"] for k, v in VISION_MODELS.items()}
+
+# Which text encoders to load at init
+TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL]
 
 CAPTION_ASPECT_KEYS = [
     "chu_the_hanh_dong",   # Subject & Action
@@ -41,3 +41,11 @@ CAPTION_ASPECT_KEYS = [
 CAPTION_EMBEDDING_DIM = {aspect: 1024 for aspect in CAPTION_ASPECT_KEYS}
 
 MAX_FRAME_GAP = 2000
+
+# Fusion weights for combined keyframe + caption search (must sum to 1.0)
+KEYFRAME_SEARCH_WEIGHT = 0.5
+CAPTION_SEARCH_WEIGHT = 0.5
+
+# Hybrid weights for shot caption search (dense semantic vs lexical BM25, must sum to 1.0)
+CAPTION_DENSE_WEIGHT = 0.6
+CAPTION_BM25_WEIGHT = 0.4

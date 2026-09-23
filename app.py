@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
-from config import VISION_EMBEDDING_DIM
+from config import VISION_EMBEDDING_DIM, KEYFRAME_SEARCH_WEIGHT, CAPTION_SEARCH_WEIGHT
 
 system = None
 video_metadata = {}
@@ -86,6 +86,8 @@ class SearchQuery(BaseModel):
     group_by_video: bool = False
     score_threshold: float = 0.0
     limit: int = 100
+    search_mode: str = "keyframe"  # "keyframe", "caption", "both"
+    caption_weight: Optional[float] = None  # weight for caption in fused search
 
 @app.get("/")
 async def index(request: Request):
@@ -175,16 +177,43 @@ async def search(query: SearchQuery):
         q_audio = q_item.get("audio") if (isinstance(q_item, dict) and q_item.get("audio") is not None) else audio_query
         q_objects = q_item.get("objects") if (isinstance(q_item, dict) and q_item.get("objects") is not None) else query.objects
 
-        results = system.semantic_search(
-            q_text, 
-            model_names=model_names, 
-            objects=q_objects,
-            score_threshold=query.score_threshold,
-            group_by_shot=query.group_by_shot,
-            limit=query.limit,
-            ocr_query=q_ocr,
-            audio_query=q_audio
-        )
+        search_mode = query.search_mode or "keyframe"
+
+        if search_mode == "caption":
+            results = system.caption_search(
+                q_text,
+                score_threshold=query.score_threshold,
+                limit=query.limit,
+                ocr_query=q_ocr,
+                audio_query=q_audio,
+                objects=q_objects
+            )
+        elif search_mode == "both":
+            # Compute weights: caption_weight from request, keyframe_weight = 1 - caption_weight
+            cap_w = query.caption_weight if query.caption_weight is not None else CAPTION_SEARCH_WEIGHT
+            kf_w = 1.0 - cap_w
+            results = system.fused_search(
+                q_text,
+                model_names=model_names,
+                objects=q_objects,
+                score_threshold=query.score_threshold,
+                limit=query.limit,
+                ocr_query=q_ocr,
+                audio_query=q_audio,
+                keyframe_weight=kf_w,
+                caption_weight=cap_w
+            )
+        else:
+            results = system.semantic_search(
+                q_text, 
+                model_names=model_names, 
+                objects=q_objects,
+                score_threshold=query.score_threshold,
+                group_by_shot=query.group_by_shot,
+                limit=query.limit,
+                ocr_query=q_ocr,
+                audio_query=q_audio
+            )
     else:
         # No text queries -> Filter search (OCR, audio transcript, object detection)
         results = system.filter_search(
@@ -281,6 +310,42 @@ async def get_video_keyframes(video_id: str):
     return {
         "video_id": vid,
         "fps": fps,
+        "keyframes": keyframes
+    }
+
+@app.get("/api/shot_keyframes/{video_id}")
+async def get_shot_keyframes(video_id: str, start_frame: int = 0, end_frame: int = 999999999):
+    """Return all keyframes in a given shot range [start_frame, end_frame] for a video."""
+    raw_vid = video_id.strip()
+    vid = os.path.splitext(raw_vid)[0]
+    fps = 25.0
+    for key in (vid, raw_vid):
+        if key in video_metadata and "fps" in video_metadata[key]:
+            fps = video_metadata[key]["fps"]
+            break
+
+    kf_dir = os.path.join("data", "keyframe", vid)
+    keyframes = []
+    if os.path.exists(kf_dir) and os.path.isdir(kf_dir):
+        for fname in os.listdir(kf_dir):
+            if fname.startswith("keyframe_") and fname.endswith(".webp"):
+                try:
+                    idx = int(fname.replace("keyframe_", "").replace(".webp", ""))
+                    if start_frame <= idx <= end_frame:
+                        keyframes.append({
+                            "video_id": vid,
+                            "keyframe_index": idx,
+                            "fps": fps
+                        })
+                except ValueError:
+                    pass
+        keyframes.sort(key=lambda x: x["keyframe_index"])
+
+    return {
+        "video_id": vid,
+        "fps": fps,
+        "start_frame": start_frame,
+        "end_frame": end_frame,
         "keyframes": keyframes
     }
 

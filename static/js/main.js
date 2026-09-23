@@ -30,7 +30,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   initFilters();
   initVideoModal();
   initCatalogTab();
-  initDynamicInputs(); // Khởi tạo logic thêm bớt input
+  initDynamicInputs();
+  initSearchModeSelector();
 
   // --- AUTO JUMP FROM URL PARAMS ---
   const urlParams = new URLSearchParams(window.location.search);
@@ -203,7 +204,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       group_by_shot: isGroupShots,
       group_by_video: isGroupVideo,
       score_threshold: scoreThreshold,
-      limit: parseInt(document.getElementById("result-limit")?.value) || 100
+      limit: parseInt(document.getElementById("result-limit")?.value) || 100,
+      search_mode: elements.searchModeSelect ? elements.searchModeSelect.value : "keyframe",
+      caption_weight: elements.captionWeightSlider ? parseFloat(elements.captionWeightSlider.value) : 0.5
     };
 
     if (
@@ -447,5 +450,26 @@ function showEvaluationModal(evaluations, sessionId) {
       elements.evalModal.classList.add("hidden");
       elements.loginBtn.textContent = "Login";
     };
+  }
+}
+
+function initSearchModeSelector() {
+  const modeSelect = elements.searchModeSelect;
+  const weightRow = elements.captionWeightRow;
+  const weightSlider = elements.captionWeightSlider;
+  const weightValue = elements.captionWeightValue;
+
+  if (!modeSelect) return;
+
+  modeSelect.addEventListener("change", () => {
+    if (weightRow) {
+      weightRow.style.display = modeSelect.value === "both" ? "flex" : "none";
+    }
+  });
+
+  if (weightSlider && weightValue) {
+    weightSlider.addEventListener("input", () => {
+      weightValue.textContent = parseFloat(weightSlider.value).toFixed(2);
+    });
   }
 }

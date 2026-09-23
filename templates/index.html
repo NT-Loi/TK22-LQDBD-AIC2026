@@ -113,6 +113,20 @@
             <label class="section-label">⚙️ Options</label>
 
             <div class="option-row">
+              <label class="option-label">Search Target</label>
+              <select id="search-mode-select" class="sidebar-select-sm" style="width: 100%;">
+                <option value="keyframe" selected>🖼️ Keyframe Embedding</option>
+                <option value="caption">📝 Caption Embedding</option>
+                <option value="both">🔀 Both (Fused)</option>
+              </select>
+            </div>
+
+            <div class="option-row" id="caption-weight-row" style="display: none;">
+              <label class="option-label">Caption Weight: <span id="caption-weight-value">0.50</span></label>
+              <input type="range" id="caption-weight-slider" min="0" max="1" step="0.05" value="0.5" class="sidebar-slider" style="width: 100%;">
+            </div>
+
+            <div class="option-row">
               <label class="option-label">Model(s)</label>
               <select id="models-select" multiple size="3" class="sidebar-select">
                 <option value="all" selected>All</option>

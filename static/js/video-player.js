@@ -456,6 +456,154 @@ export function closeModal() {
   if (elements.modalShotList) elements.modalShotList.innerHTML = "";
 }
 
+/**
+ * Open modal for a caption search result.
+ * Fetches all keyframes in the shot range and renders a tabbed sidebar:
+ *  - "Keyframes" tab: all keyframes in the shot
+ *  - "Caption" tab: caption aspects ranked by their score
+ */
+export async function openCaptionModal(captionItem, fps) {
+  const videoId = captionItem.video_id;
+  const repFrame = captionItem.representative_frame || captionItem.keyframe_index;
+  const startTime = Math.max(0, repFrame / fps - 0.5);
+
+  // Open the standard modal (video player, timeline, controls)
+  openModal(videoId, startTime, fps, null, repFrame, null);
+
+  // Now override the sidebar with tabbed content
+  if (!elements.modalShotList) return;
+
+  elements.modalShotList.innerHTML = '<div style="padding:10px; color:#8b949e;">Loading shot keyframes...</div>';
+
+  // Fetch all keyframes in the shot range
+  let shotKeyframes = [];
+  try {
+    const startF = captionItem.shot_start_frame || 0;
+    const endF = captionItem.shot_end_frame || 999999999;
+    const res = await fetch(`/api/shot_keyframes/${encodeURIComponent(videoId)}?start_frame=${startF}&end_frame=${endF}`);
+    const data = await res.json();
+    shotKeyframes = data.keyframes || [];
+  } catch (e) {
+    console.error("Failed to fetch shot keyframes:", e);
+  }
+
+  // Build tabbed sidebar
+  renderCaptionSidebar(captionItem, shotKeyframes, fps, repFrame);
+}
+
+let captionSidebarActiveTab = "keyframes";
+
+function renderCaptionSidebar(captionItem, shotKeyframes, fps, specificKeyframe) {
+  if (!elements.modalShotList) return;
+  elements.modalShotList.innerHTML = "";
+
+  // --- Tab bar ---
+  const tabBar = document.createElement("div");
+  tabBar.style.cssText = "display: flex; border-bottom: 2px solid #30363d; background: #161b22;";
+
+  const tabs = [
+    { id: "keyframes", label: `🖼️ Keyframes (${shotKeyframes.length})` },
+    { id: "caption", label: "📝 Caption" }
+  ];
+
+  tabs.forEach(tab => {
+    const tabBtn = document.createElement("button");
+    tabBtn.textContent = tab.label;
+    tabBtn.dataset.tab = tab.id;
+    const isActive = captionSidebarActiveTab === tab.id;
+    tabBtn.style.cssText = `flex: 1; padding: 8px 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s; ${
+      isActive
+        ? "background: #21262d; color: #58a6ff; border-bottom: 2px solid #58a6ff;"
+        : "background: #161b22; color: #8b949e; border-bottom: 2px solid transparent;"
+    }`;
+    tabBtn.addEventListener("click", () => {
+      captionSidebarActiveTab = tab.id;
+      renderCaptionSidebar(captionItem, shotKeyframes, fps, specificKeyframe);
+    });
+    tabBar.appendChild(tabBtn);
+  });
+  elements.modalShotList.appendChild(tabBar);
+
+  // --- Tab content ---
+  const contentDiv = document.createElement("div");
+  contentDiv.style.cssText = "overflow-y: auto; flex: 1;";
+
+  if (captionSidebarActiveTab === "keyframes") {
+    renderKeyframesTab(contentDiv, shotKeyframes, fps, specificKeyframe);
+  } else {
+    renderCaptionTab(contentDiv, captionItem);
+  }
+
+  elements.modalShotList.appendChild(contentDiv);
+}
+
+function renderKeyframesTab(container, keyframes, fps, specificKeyframe) {
+  if (!keyframes || keyframes.length === 0) {
+    container.innerHTML = '<div style="padding:10px; color:#8b949e;">No keyframes found in this shot.</div>';
+    return;
+  }
+
+  keyframes.forEach(kf => {
+    const itemDiv = document.createElement("div");
+    itemDiv.className = "sidebar-keyframe-item";
+    if (kf.keyframe_index === specificKeyframe) {
+      itemDiv.classList.add("active");
+      itemDiv.style.border = "2px solid #58a6ff";
+    }
+
+    itemDiv.innerHTML = `
+      <img src="/keyframes/${kf.video_id}/keyframe_${kf.keyframe_index}.webp" loading="lazy">
+      <div class="sidebar-info">
+        <strong>Frame: ${kf.keyframe_index}</strong>
+      </div>
+    `;
+    itemDiv.addEventListener("click", () => {
+      elements.modalVideoPlayer.currentTime = kf.keyframe_index / fps;
+      elements.modalVideoPlayer.play();
+    });
+    container.appendChild(itemDiv);
+  });
+}
+
+function renderCaptionTab(container, captionItem) {
+  const aspects = captionItem.aspects || {};
+  const bestAspect = captionItem.best_aspect || "";
+
+  // Sort aspects: best aspect first, then alphabetically
+  const sortedKeys = Object.keys(aspects).sort((a, b) => {
+    if (a === bestAspect) return -1;
+    if (b === bestAspect) return 1;
+    return a.localeCompare(b);
+  });
+
+  if (sortedKeys.length === 0) {
+    // Fallback to full caption text
+    const fullCaption = captionItem.caption_text || "No caption available.";
+    container.innerHTML = `<div style="padding: 10px; color: #c9d1d9; font-size: 12px; line-height: 1.5; white-space: pre-wrap;">${fullCaption}</div>`;
+    return;
+  }
+
+  sortedKeys.forEach(key => {
+    const aspectDiv = document.createElement("div");
+    const isBest = key === bestAspect;
+    aspectDiv.style.cssText = `padding: 8px 10px; border-bottom: 1px solid #21262d; ${isBest ? 'background: rgba(88, 166, 255, 0.08);' : ''}`;
+
+    const label = key.replace(/_/g, ' ');
+    const text = aspects[key] || "";
+
+    aspectDiv.innerHTML = `
+      <div style="font-size: 11px; font-weight: 700; color: ${isBest ? '#58a6ff' : '#8b949e'}; margin-bottom: 4px; text-transform: capitalize;">
+        ${isBest ? '⭐ ' : ''}${label}
+      </div>
+      <div style="font-size: 12px; color: #c9d1d9; line-height: 1.4; white-space: pre-wrap; word-break: break-word;">
+        ${text}
+      </div>
+    `;
+    container.appendChild(aspectDiv);
+  });
+}
+
+
 export async function openDirectVideo(videoIdRaw, keyframeIdxRaw) {
   if (!videoIdRaw) return;
 
