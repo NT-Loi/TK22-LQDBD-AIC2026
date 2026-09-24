@@ -96,8 +96,13 @@ async def index(request: Request):
 
 @app.get("/api/models")
 async def get_models():
-    # Return available model filters
-    models = ["score"] + list(VISION_EMBEDDING_DIM.keys())
+    # Only advertise models whose query encoders initialized successfully.
+    available = (
+        [name for name in VISION_EMBEDDING_DIM if name in system.text_encoders]
+        if system is not None
+        else []
+    )
+    models = ["score"] + available
     return {"models": models}
 
 @app.post("/search")
