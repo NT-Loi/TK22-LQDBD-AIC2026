@@ -175,3 +175,119 @@ uv run uvicorn app:app --reload
 ```
 
 The web interface will be live at `http://localhost:8000`.
+
+## Kết nối và nộp bài DRES
+
+### Chạy thực tế với DRES chính thức
+
+Tạo `.env` cục bộ từ file mẫu và điền mật khẩu thật:
+
+```bash
+cp .env.example .env
+```
+
+```env
+DRES_BASE_URL=https://eventretrieval.one
+DRES_DEFAULT_USERNAME=team_197
+DRES_DEFAULT_PASSWORD=mat-khau-cua-doi
+DRES_REQUEST_TIMEOUT_SECONDS=10
+DRES_COOKIE_SECURE=false
+```
+
+Không commit `.env`; file này đã được khai báo trong `.gitignore`. Nếu ứng dụng
+được triển khai qua HTTPS, đặt `DRES_COOKIE_SECURE=true`.
+
+Khởi động hệ thống:
+
+```bash
+docker compose up -d
+uv sync
+uv run --env-file .env uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Mở `http://localhost:8000`, đăng nhập DRES, chọn evaluation đang `ACTIVE`, rồi
+chọn **Chế độ nộp** ở góc trên bên trái:
+
+- **KIS:** chọn keyframe hoặc dừng video tại đúng thời điểm rồi nhấn Submit.
+- **Q&A:** chọn kết quả, nhập câu trả lời ngắn và xác nhận. Payload có dạng
+  `QA-ANSWER-VIDEO_ID-TIME_MS`.
+- **TRAKE:** thêm nhiều semantic keyframe cùng video, sắp theo thời gian tăng
+  nghiêm ngặt rồi nộp chuỗi `TR-VIDEO_ID-FRAME_ID1,FRAME_ID2,...`.
+
+Hộp xác nhận hiển thị payload và đường gửi request trước khi nộp. DRES session
+được backend gắn vào query theo API DRES v2 và được che trên giao diện. Mọi lần
+nộp ở chế độ thực tế đều có thể ảnh hưởng điểm thi, vì vậy cần kiểm tra kỹ URL,
+evaluation, chế độ và payload trước khi xác nhận.
+
+### Chạy thử giao diện bằng Mock DRES
+
+Mock DRES dùng một evaluation duy nhất (`mock-final`) và cho phép chọn thủ công
+giữa KIS, Q&A và TRAKE. Cách này không gửi dữ liệu tới DRES chính thức và không
+cần sửa hoặc ghi đè `.env` thật.
+
+Khởi động hạ tầng:
+
+```bash
+docker compose up -d
+uv sync
+```
+
+Trong terminal thứ nhất, chạy Mock DRES:
+
+```bash
+uv run uvicorn scripts.mock_dres_server:app --host 127.0.0.1 --port 19100
+```
+
+Trong terminal thứ hai, chạy ứng dụng với cấu hình mock ở cổng riêng:
+
+```bash
+uv run --env-file .env.mock.example uvicorn app:app --host 127.0.0.1 --port 8765
+```
+
+Sau đó:
+
+1. Mở `http://127.0.0.1:8765`.
+2. Chọn **Đăng nhập DRES** → **Đăng nhập mặc định**.
+3. Chọn evaluation `MOCK • Chung kết AIC 2026`.
+4. Chọn KIS, Q&A hoặc TRAKE trong danh sách **Chế độ nộp** và nộp thử.
+5. Mở `http://127.0.0.1:19100/debug` để xem method, URL, query và JSON payload
+   mà Mock DRES đã nhận.
+
+Không chạy ứng dụng thực tế và ứng dụng mock trên cùng một cổng. Sau khi đổi
+cấu hình DRES, phải khởi động lại tiến trình ứng dụng vì DRES client được tạo
+khi server khởi động.
+
+### Chạy kiểm thử tự động
+
+Chạy toàn bộ test của tính năng đăng nhập, session, payload và Mock DRES:
+
+```bash
+uv run python -m unittest \
+  tests.test_mock_dres_server \
+  tests.test_dres_submission \
+  tests.test_dres_client \
+  tests.test_dres_session
+```
+
+Kết quả mong đợi: `Ran 12 tests` và `OK`.
+
+Kiểm tra cú pháp các module JavaScript của luồng nộp bài:
+
+```bash
+node --check static/js/dres-session.js
+node --check static/js/submission.js
+node --check static/js/trake.js
+```
+
+### Dừng hệ thống
+
+Nhấn `Ctrl+C` trong các terminal đang chạy Uvicorn, sau đó dừng hạ tầng:
+
+```bash
+docker compose down
+```
+
+Kế hoạch, tiêu chí nghiệm thu và hướng dẫn giao diện chi tiết:
+
+- [`KE_HOACH_DRES_LOGIN_SUBMIT.md`](KE_HOACH_DRES_LOGIN_SUBMIT.md)
+- [`HUONG_DAN_TEST_GIAO_DIEN_DRES.md`](HUONG_DAN_TEST_GIAO_DIEN_DRES.md)

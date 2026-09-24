@@ -1,5 +1,8 @@
 import { elements } from "./elements.js";
-import { submitResultAPI } from "./api.js";
+import {
+  getSubmissionButtonLabel,
+  handlePlayerSubmission,
+} from "./submission.js?v=11";
 
 let currentOpenVideoId = null;
 
@@ -78,6 +81,12 @@ export function initVideoModal() {
   elements.modalOverlay.addEventListener("click", (e) => {
     if (e.target === elements.modalOverlay) {
       closeModal();
+    }
+  });
+  document.addEventListener("trake:open-frame", (event) => {
+    const item = event.detail;
+    if (item?.videoId && Number.isInteger(item.frameId)) {
+      openDirectVideo(item.videoId, item.frameId);
     }
   });
 }
@@ -315,6 +324,7 @@ export function openModal(
   // --- 7. EVENT LISTENERS ---
   const frameRate = fps;
   const dynSubmitBtn = frameControls.querySelector("#dynamic-submit-btn");
+  dynSubmitBtn.textContent = getSubmissionButtonLabel({ player: true });
   const frameInput = frameControls.querySelector("#current-frame-input");
   const totalFramesSpan = frameControls.querySelector("#total-frames-span");
   const prevBtn = frameControls.querySelector("#prev-frame-btn");
@@ -351,25 +361,13 @@ export function openModal(
   });
 
   // Submit Logic (Pause Video)
-  dynSubmitBtn.addEventListener("click", async () => {
+  dynSubmitBtn.addEventListener("click", () => {
     elements.modalVideoPlayer.pause(); // PAUSE
-    const sId = localStorage.getItem("sessionId");
-    const eId = localStorage.getItem("evaluationId");
-    if (!sId || !eId) {
-      alert("Please LOGIN first!");
-      return;
-    }
-
-    const tMs = Math.round(elements.modalVideoPlayer.currentTime * 1000);
-    const cf = Math.round(elements.modalVideoPlayer.currentTime * frameRate);
-    if (confirm(`Submit frame ${cf} (${tMs}ms) of ${videoId}?`)) {
-      try {
-        const res = await submitResultAPI(sId, eId, videoId, tMs);
-        alert(`Success!`);
-      } catch (err) {
-        alert(`Failed: ${err.message}`);
-      }
-    }
+    handlePlayerSubmission({
+      videoId,
+      currentTime: elements.modalVideoPlayer.currentTime,
+      fps: frameRate,
+    });
   });
 
   // Nav Logic

@@ -1,6 +1,10 @@
 import { elements } from "./elements.js";
-import { openModal, openCaptionModal } from "./video-player.js";
-import { submitResultAPI } from "./api.js";
+import { openModal, openCaptionModal } from "./video-player.js?v=10";
+import {
+  getSubmissionButtonLabel,
+  handleSequenceSubmission,
+  handleSubmissionCandidate,
+} from "./submission.js?v=11";
 
 // Helper: Shuffle array
 function shuffleArray(array) {
@@ -273,7 +277,17 @@ function displayFlatResults(results) {
 
     // Submit Handler
     const submitBtn = resultElement.querySelector(".card-submit-btn");
-    submitBtn.addEventListener("click", (e) => handleSubmit(e, item));
+    const sequenceFrames = Array.isArray(item.temporal_sequence)
+      ? item.temporal_sequence
+      : (Array.isArray(item.frames) ? item.frames : null);
+    if (sequenceFrames?.length) {
+      submitBtn.dataset.sequence = "true";
+      submitBtn.textContent = getSubmissionButtonLabel({ sequence: true });
+      submitBtn.addEventListener("click", (e) => handleSequenceSubmission(e, sequenceFrames));
+    } else {
+      submitBtn.textContent = getSubmissionButtonLabel();
+      submitBtn.addEventListener("click", (e) => handleSubmissionCandidate(e, item));
+    }
 
     // Open Modal
     resultElement.addEventListener("click", () => {
@@ -396,16 +410,17 @@ function displaySequenceResults(results) {
                     <strong style="color:#58a6ff;">🖼️ Keyframes:</strong> ${totalKeyframes}<br>
                     <strong>${scoreLabel}:</strong> ${(seq.sequence_score || seq.score).toFixed(3)}${bestScoreHTML}${pairsCountHTML}
                 </div>
-                <button class="card-submit-btn">Submit Anchor</button>
+                <button class="card-submit-btn" data-sequence="true">Submit</button>
             </div>
         `;
 
     card.innerHTML = gridHTML + infoHTML;
 
-    // Submit Handler for the anchor (the first display frame)
+    // KIS/QA uses the anchor; TRAKE loads the whole semantic sequence.
     const submitBtn = card.querySelector(".card-submit-btn");
     if (submitBtn) {
-        submitBtn.addEventListener("click", (e) => handleSubmit(e, displayFrames[0]));
+        submitBtn.textContent = getSubmissionButtonLabel({ sequence: true });
+        submitBtn.addEventListener("click", (e) => handleSequenceSubmission(e, seq.frames || displayFrames));
     }
 
     // Click to Open Modal — pass ALL frames so modal shows full detail
@@ -459,7 +474,8 @@ function displayCaptionResults(results) {
 
     // Submit
     const submitBtn = card.querySelector(".card-submit-btn");
-    submitBtn.addEventListener("click", (e) => handleSubmit(e, item));
+    submitBtn.textContent = getSubmissionButtonLabel();
+    submitBtn.addEventListener("click", (e) => handleSubmissionCandidate(e, item));
 
     // Click -> open modal with ALL keyframes in this shot
     card.addEventListener("click", (e) => {
@@ -470,33 +486,4 @@ function displayCaptionResults(results) {
 
     elements.resultsContainer.appendChild(card);
   });
-}
-
-async function handleSubmit(e, item) {
-  e.stopPropagation();
-  const sessionId = localStorage.getItem("sessionId");
-  const evaluationId = localStorage.getItem("evaluationId");
-  if (!sessionId || !evaluationId) {
-    alert("Please LOGIN first!");
-    return;
-  }
-  const confirmSubmit = confirm(
-    `Submit frame ${item.keyframe_index} of ${item.video_id}?`,
-  );
-  if (!confirmSubmit) return;
-
-  const fps = parseFloat(item.fps) || 25.0;
-  const timeMs = Math.round((item.keyframe_index / fps) * 1000);
-
-  try {
-    const res = await submitResultAPI(
-      sessionId,
-      evaluationId,
-      item.video_id,
-      timeMs,
-    );
-    alert(`Success!`);
-  } catch (err) {
-    alert(`Submit Failed: ${err.message}`);
-  }
 }

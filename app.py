@@ -1,22 +1,45 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Optional, Union
+from typing import Any, List, Literal, Optional
 import uvicorn
 import os
+import hashlib
+import json
 from contextlib import asynccontextmanager
 
+
+from dotenv import load_dotenv
 from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
 from config import VISION_EMBEDDING_DIM, KEYFRAME_SEARCH_WEIGHT, CAPTION_SEARCH_WEIGHT, DEFAULT_VISION_MODEL
 
+from services.dres_client import DresApiError, DresClient
+from services.dres_session import DresSession, DresSessionStore
+from services.dres_submission import build_dres_submission_payload
+
+load_dotenv()
 system = None
 video_metadata = {}
 
 SUPPORTED_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+DRES_COOKIE_NAME = "aic_dres_session"
+DRES_BASE_URL = os.getenv("DRES_BASE_URL", "https://eventretrieval.one")
+DRES_DEFAULT_USERNAME = os.getenv("DRES_DEFAULT_USERNAME", "team_197")
+DRES_DEFAULT_PASSWORD = os.getenv("DRES_DEFAULT_PASSWORD", "")
+DRES_COOKIE_SECURE = os.getenv("DRES_COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
+
+try:
+    DRES_REQUEST_TIMEOUT_SECONDS = float(os.getenv("DRES_REQUEST_TIMEOUT_SECONDS", "10"))
+except ValueError:
+    DRES_REQUEST_TIMEOUT_SECONDS = 10.0
+
+dres_client = DresClient(DRES_BASE_URL, DRES_REQUEST_TIMEOUT_SECONDS)
+dres_sessions = DresSessionStore(ttl_hours=8)
 
 def get_safe_video_path(video_name: str) -> Optional[str]:
     """Resolves video path securely, matching either exact file or base ID with supported extensions."""
@@ -73,7 +96,6 @@ app.mount("/keyframes", StaticFiles(directory="data/keyframe"), name="keyframes"
 
 templates = Jinja2Templates(directory="templates")
 
-from typing import List, Optional, Union, Any
 
 class SearchQuery(BaseModel):
     text_queries: Optional[List[Any]] = []
@@ -415,25 +437,274 @@ async def get_videos():
         scan_all_videos()
     return {"videos": videos_cache}
 
-@app.post("/api/login")
-async def login(request: Request):
-    # Stub login endpoint
+class DresLoginData(BaseModel):
+    username: str
+    password: str
+
+
+class DresEvaluationSelection(BaseModel):
+    evaluationId: str
+
+
+class DresSubmissionData(BaseModel):
+    evaluationId: Optional[str] = None
+    mode: Literal["kis", "qa", "trake"]
+    videoId: str
+    timeMs: Optional[int] = None
+    answer: Optional[str] = None
+    frameIds: Optional[List[int]] = None
+
+
+def _public_user(user: dict[str, Any]) -> dict[str, Any]:
     return {
-        "sessionId": "session-1234",
-        "evaluations": [
-            {"id": "eval-1", "name": "AIC 2026 Test Evaluation", "status": "active"}
-        ]
+        key: user.get(key)
+        for key in ("id", "username", "role")
+        if user.get(key) is not None
     }
 
-class SubmitData(BaseModel):
-    sessionId: str
-    evaluationId: str
-    videoId: str
-    timeMs: int
 
-@app.post("/api/submit")
-async def submit(data: SubmitData):
-    print(f"Submitted result: Video={data.videoId}, Time={data.timeMs}ms (Session: {data.sessionId})")
+def _active_evaluations(evaluations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        evaluation
+        for evaluation in evaluations
+        if str(evaluation.get("status", "")).upper() == "ACTIVE"
+    ]
+
+
+def _dres_http_error(error: DresApiError) -> HTTPException:
+    status_code = error.status_code if 400 <= error.status_code <= 599 else 502
+    return HTTPException(status_code=status_code, detail=error.message)
+
+
+def _require_dres_session(request: Request) -> tuple[str, DresSession]:
+    local_id = request.cookies.get(DRES_COOKIE_NAME)
+    session = dres_sessions.get(local_id)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Phiên DRES không tồn tại hoặc đã hết hạn")
+    return local_id, session
+
+
+def _session_response(session: DresSession) -> dict[str, Any]:
+    return {
+        "connected": True,
+        "user": _public_user(session.user),
+        "evaluations": session.evaluations,
+        "selectedEvaluationId": session.selected_evaluation_id,
+        "defaultUsername": DRES_DEFAULT_USERNAME,
+        "dresBaseUrl": DRES_BASE_URL,
+    }
+
+
+async def _login_to_dres(
+    request: Request,
+    response: Response,
+    username: str,
+    password: str,
+) -> dict[str, Any]:
+    username = username.strip()
+    if not username or not password:
+        raise HTTPException(status_code=422, detail="Username và password không được để trống")
+
+    old_local_id = request.cookies.get(DRES_COOKIE_NAME)
+    old_session = dres_sessions.delete(old_local_id)
+    if old_session is not None:
+        try:
+            await dres_client.logout(old_session.dres_session_id)
+        except DresApiError:
+            pass
+
+    try:
+        dres_user = await dres_client.login(username, password)
+        evaluations = _active_evaluations(
+            await dres_client.list_evaluations(dres_user["sessionId"])
+        )
+    except DresApiError as error:
+        raise _dres_http_error(error) from error
+
+    session = dres_sessions.create(
+        dres_user["sessionId"],
+        _public_user(dres_user),
+        evaluations,
+    )
+    response.set_cookie(
+        DRES_COOKIE_NAME,
+        session.local_id,
+        max_age=8 * 60 * 60,
+        httponly=True,
+        secure=DRES_COOKIE_SECURE,
+        samesite="strict",
+        path="/",
+    )
+    return _session_response(session)
+
+
+@app.post("/api/dres/login/default")
+async def dres_default_login(request: Request, response: Response):
+    if not DRES_DEFAULT_PASSWORD:
+        raise HTTPException(
+            status_code=503,
+            detail="DRES_DEFAULT_PASSWORD chưa được cấu hình trong .env",
+        )
+    return await _login_to_dres(
+        request,
+        response,
+        DRES_DEFAULT_USERNAME,
+        DRES_DEFAULT_PASSWORD,
+    )
+
+
+@app.post("/api/dres/login")
+async def dres_custom_login(data: DresLoginData, request: Request, response: Response):
+    return await _login_to_dres(request, response, data.username, data.password)
+
+
+@app.get("/api/dres/session")
+async def dres_session_status(request: Request):
+    local_id = request.cookies.get(DRES_COOKIE_NAME)
+    session = dres_sessions.get(local_id)
+    if session is None:
+        return {
+            "connected": False,
+            "defaultUsername": DRES_DEFAULT_USERNAME,
+            "dresBaseUrl": DRES_BASE_URL,
+        }
+    return _session_response(session)
+
+
+@app.get("/api/dres/evaluations")
+async def dres_evaluation_list(request: Request):
+    _, session = _require_dres_session(request)
+    try:
+        session.evaluations = _active_evaluations(
+            await dres_client.list_evaluations(session.dres_session_id)
+        )
+    except DresApiError as error:
+        if error.status_code == 401:
+            dres_sessions.delete(request.cookies.get(DRES_COOKIE_NAME))
+        raise _dres_http_error(error) from error
+    return {"evaluations": session.evaluations}
+
+
+@app.post("/api/dres/evaluation")
+async def dres_select_evaluation(data: DresEvaluationSelection, request: Request):
+    local_id, session = _require_dres_session(request)
+    visible_ids = {str(evaluation.get("id")) for evaluation in session.evaluations}
+    if data.evaluationId not in visible_ids:
+        raise HTTPException(status_code=404, detail="Evaluation không tồn tại hoặc không ACTIVE")
+    dres_sessions.select_evaluation(local_id, data.evaluationId)
+    return {"selectedEvaluationId": data.evaluationId}
+
+
+@app.get("/api/dres/current-task/{evaluation_id}")
+async def dres_current_task(evaluation_id: str, request: Request):
+    _, session = _require_dres_session(request)
+    visible_ids = {str(evaluation.get("id")) for evaluation in session.evaluations}
+    if evaluation_id not in visible_ids:
+        raise HTTPException(status_code=404, detail="Evaluation không tồn tại hoặc không ACTIVE")
+    try:
+        task = await dres_client.current_task(session.dres_session_id, evaluation_id)
+    except DresApiError as error:
+        if error.status_code == 401:
+            dres_sessions.delete(request.cookies.get(DRES_COOKIE_NAME))
+        raise _dres_http_error(error) from error
+    return {"task": task}
+
+
+def _submission_fingerprint(
+    evaluation_id: str,
+    task: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    task_identity = {
+        "id": task.get("id"),
+        "taskId": task.get("taskId"),
+        "name": task.get("name"),
+        "taskGroup": task.get("taskGroup"),
+        "taskType": task.get("taskType"),
+    }
+    serialized = json.dumps(
+        {"evaluationId": evaluation_id, "task": task_identity, "payload": payload},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@app.post("/api/dres/submit")
+async def dres_submit(data: DresSubmissionData, request: Request):
+    local_id, session = _require_dres_session(request)
+    evaluation_id = data.evaluationId or session.selected_evaluation_id
+    if not evaluation_id:
+        raise HTTPException(status_code=422, detail="Chưa chọn evaluation")
+    visible_ids = {str(evaluation.get("id")) for evaluation in session.evaluations}
+    if evaluation_id not in visible_ids:
+        raise HTTPException(status_code=404, detail="Evaluation không tồn tại hoặc không ACTIVE")
+
+    try:
+        payload = build_dres_submission_payload(
+            mode=data.mode,
+            video_id=data.videoId,
+            time_ms=data.timeMs,
+            answer=data.answer,
+            frame_ids=data.frameIds,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    task: dict[str, Any] | None = None
+    fingerprint: str | None = None
+    try:
+        task = await dres_client.current_task(session.dres_session_id, evaluation_id)
+    except DresApiError as error:
+        if error.status_code == 401:
+            dres_sessions.delete(local_id)
+            raise _dres_http_error(error) from error
+        if error.status_code != 404:
+            raise _dres_http_error(error) from error
+
+    if task:
+        fingerprint = _submission_fingerprint(evaluation_id, task, payload)
+        if dres_sessions.has_fingerprint(local_id, fingerprint):
+            raise HTTPException(
+                status_code=409,
+                detail="Payload này đã được nộp cho task DRES hiện tại",
+            )
+
+    try:
+        status_code, dres_response = await dres_client.submit(
+            session.dres_session_id,
+            evaluation_id,
+            payload,
+        )
+    except DresApiError as error:
+        if error.status_code == 401:
+            dres_sessions.delete(local_id)
+        raise _dres_http_error(error) from error
+
+    if fingerprint:
+        dres_sessions.record_fingerprint(local_id, fingerprint)
+    session.selected_evaluation_id = evaluation_id
+    return {
+        "accepted": True,
+        "pending": status_code == 202,
+        "dresStatus": status_code,
+        "result": dres_response,
+        "payload": payload,
+        "task": task,
+    }
+
+
+@app.post("/api/dres/logout")
+async def dres_logout(request: Request, response: Response):
+    local_id = request.cookies.get(DRES_COOKIE_NAME)
+    session = dres_sessions.delete(local_id)
+    if session is not None:
+        try:
+            await dres_client.logout(session.dres_session_id)
+        except DresApiError:
+            pass
+    response.delete_cookie(DRES_COOKIE_NAME, path="/")
     return {"status": "success"}
 
 if __name__ == "__main__":

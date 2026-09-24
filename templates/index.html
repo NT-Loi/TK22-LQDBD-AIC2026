@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Retrieval - AIC 2026</title>
-  <link rel="stylesheet" href="/static/style.css?v=6">
+  <link rel="stylesheet" href="/static/style.css?v=9">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 
@@ -34,7 +34,23 @@
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
           <h1 class="sidebar-title">AIC 2026</h1>
-          <button id="login-btn" class="login-btn">Login</button>
+          <div class="dres-header-controls">
+            <label class="submission-mode-control" for="submission-mode-select">
+              <span>Chế độ nộp</span>
+              <select id="submission-mode-select" class="submission-mode-select">
+                <option value="kis" selected>KIS</option>
+                <option value="qa">Q&amp;A</option>
+                <option value="trake">TRAKE</option>
+              </select>
+            </label>
+            <button id="login-btn" class="login-btn" type="button">Đăng nhập DRES</button>
+          </div>
+        </div>
+        <div class="dres-task-bar">
+          <span id="dres-task-label">Chưa kết nối DRES</span>
+          <button id="open-trake-btn" type="button" class="trake-open-btn">
+            TRAKE <span id="trake-count">0</span>
+          </button>
         </div>
 
         <form id="search-form" class="sidebar-form">
@@ -322,7 +338,96 @@
     </div>
   </div>
 
-  <script type="module" src="/static/js/main.js?v=7"></script>
+  <!-- DRES Login Modal -->
+  <div id="dres-login-modal" class="modal-overlay hidden">
+    <div class="modal-content dres-modal-card">
+      <button id="close-dres-login-btn" class="close-btn" type="button">&times;</button>
+      <h3>Kết nối DRES</h3>
+      <p id="dres-account-summary" class="dres-account-summary">Chưa kết nối</p>
+
+      <div id="dres-login-actions">
+        <button id="default-login-btn" type="button" class="dres-primary-btn">
+          Đăng nhập mặc định (<span id="dres-default-username">team_197</span>)
+        </button>
+        <button id="show-custom-login-btn" type="button" class="dres-secondary-btn">Dùng tài khoản khác</button>
+        <form id="custom-login-form">
+          <div id="custom-login-fields" class="hidden">
+            <label for="dres-username">Username</label>
+            <input id="dres-username" type="text" autocomplete="username">
+            <label for="dres-password">Password</label>
+            <input id="dres-password" type="password" autocomplete="current-password">
+            <button type="submit" class="dres-primary-btn">Đăng nhập tài khoản này</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="dres-connected-actions" class="hidden dres-connected-actions">
+        <button id="switch-account-btn" type="button" class="dres-secondary-btn">Đổi tài khoản</button>
+        <button id="change-evaluation-btn" type="button" class="dres-secondary-btn">Đổi evaluation</button>
+        <button id="refresh-task-btn" type="button" class="dres-secondary-btn">Làm mới task</button>
+        <button id="open-dres-btn" type="button" class="dres-secondary-btn">Mở DRES</button>
+        <button id="dres-logout-btn" type="button" class="dres-danger-btn">Đăng xuất</button>
+      </div>
+      <p id="dres-login-status" class="dres-status" role="status"></p>
+    </div>
+  </div>
+
+  <!-- KIS / Q&A Submission Modal -->
+  <div id="submission-modal" class="modal-overlay hidden">
+    <div class="modal-content submission-modal-card">
+      <button id="close-submission-btn" class="close-btn" type="button">&times;</button>
+      <div class="submission-title-row">
+        <h3>Xác nhận nộp <span id="submission-mode-label">KIS</span></h3>
+      </div>
+      <p id="submission-context" class="submission-context"></p>
+      <p id="submission-details" class="submission-details"></p>
+      <div id="qa-answer-row" class="submission-field hidden">
+        <label for="qa-answer-input">Câu trả lời Q&amp;A</label>
+        <input id="qa-answer-input" type="text" autocomplete="off" placeholder="Ví dụ: màu đỏ">
+      </div>
+      <label class="submission-preview-label" for="submission-payload-preview">Payload gửi DRES</label>
+      <pre id="submission-payload-preview" class="submission-preview"></pre>
+      <label class="submission-preview-label" for="submission-route-preview">Đường gửi request</label>
+      <code id="submission-route-preview" class="submission-route-preview"></code>
+      <p class="submission-route-note">Session DRES do backend gắn vào query và luôn được che trên giao diện.</p>
+      <p class="submission-warning">
+        Nộp sai bị trừ 10 điểm. Thời điểm nộp ảnh hưởng trực tiếp đến điểm số.
+      </p>
+      <p id="submission-result" class="submission-result" role="status"></p>
+      <div class="submission-actions">
+        <button id="cancel-submission-btn" type="button" class="dres-secondary-btn">Quay lại</button>
+        <button id="confirm-submission-btn" type="button" class="dres-primary-btn">Xác nhận nộp</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRAKE Workspace -->
+  <aside id="trake-workspace" class="trake-workspace hidden" aria-label="TRAKE Workspace">
+    <div class="trake-workspace-header">
+      <div>
+        <h3>TRAKE Workspace</h3>
+        <span id="trake-video-id">Chưa chọn video</span>
+      </div>
+      <button id="close-trake-btn" type="button" class="trake-close-btn">&times;</button>
+    </div>
+    <p id="trake-status" class="trake-status" role="status">Chưa có semantic keyframe nào.</p>
+    <div id="trake-frame-list" class="trake-frame-list"></div>
+    <div class="trake-preview-wrap">
+      <span>Chuỗi sẽ gửi</span>
+      <code id="trake-preview">TR-&lt;VIDEO_ID&gt;-&lt;FRAME_IDS&gt;</code>
+    </div>
+    <div class="trake-preview-wrap">
+      <span>Đường gửi request</span>
+      <code id="trake-route-preview" class="submission-route-preview"></code>
+    </div>
+    <p class="submission-warning">Frame phải tăng nghiêm ngặt theo thời gian. Nộp sai bị trừ điểm.</p>
+    <div class="trake-actions">
+      <button id="clear-trake-btn" type="button" class="dres-secondary-btn">Xóa chuỗi</button>
+      <button id="trake-submit-btn" type="button" class="dres-primary-btn" disabled>Nộp TRAKE</button>
+    </div>
+  </aside>
+
+  <script type="module" src="/static/js/main.js?v=11"></script>
 </body>
 
 </html>

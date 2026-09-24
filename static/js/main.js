@@ -1,8 +1,11 @@
 import { elements } from "./elements.js";
 import { initFilters, getObjectQueries } from "./filters.js";
-import { searchAPI, loginAPI } from "./api.js";
-import { displayResults } from "./results.js";
-import { initVideoModal, openDirectVideo } from "./video-player.js";
+import { searchAPI } from "./api.js?v=10";
+import { initDresSession } from "./dres-session.js?v=11";
+import { initSubmissionUI } from "./submission.js?v=11";
+import { initTrakeWorkspace } from "./trake.js?v=11";
+import { displayResults } from "./results.js?v=10";
+import { initVideoModal, openDirectVideo } from "./video-player.js?v=10";
 import { initCatalogTab } from "./catalog.js";
 
 let currentResults = [];
@@ -32,6 +35,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   initCatalogTab();
   initDynamicInputs();
   initSearchModeSelector();
+  initSubmissionUI();
+  initTrakeWorkspace();
+  initDresSession();
 
   // --- AUTO JUMP FROM URL PARAMS ---
   const urlParams = new URLSearchParams(window.location.search);
@@ -109,25 +115,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (isGroupVideo) isGroupShots = false;
       updateGroupButtonsUI();
       displayResults(currentResults, getGroupMode());
-    });
-  }
-
-  // --- LOGIN LOGIC (Giữ nguyên) ---
-  if (elements.loginBtn) {
-    elements.loginBtn.addEventListener("click", async () => {
-      elements.loginBtn.textContent = "Logging in...";
-      try {
-        const data = await loginAPI();
-        if (!data.evaluations || data.evaluations.length === 0) {
-          alert("No active evaluations found.");
-          elements.loginBtn.textContent = "Login";
-          return;
-        }
-        showEvaluationModal(data.evaluations, data.sessionId);
-      } catch (error) {
-        alert(`Login Failed: ${error.message}`);
-        elements.loginBtn.textContent = "Login failed";
-      }
     });
   }
 
@@ -487,33 +474,6 @@ function reindexRows() {
     input.name = `description_${index}`;
     input.placeholder = index === 0 ? "Event 1..." : "Next Event...";
   });
-}
-
-// ... (Giữ nguyên phần showEvaluationModal) ...
-function showEvaluationModal(evaluations, sessionId) {
-  elements.evalListContainer.innerHTML = "";
-  evaluations.forEach((ev) => {
-    const btn = document.createElement("button");
-    btn.textContent = `${ev.name} (${ev.status})`;
-    btn.style.width = "100%";
-    btn.style.margin = "5px 0";
-    btn.onclick = () => {
-      localStorage.setItem("sessionId", sessionId);
-      localStorage.setItem("evaluationId", ev.id);
-      elements.evalModal.classList.add("hidden");
-      elements.loginBtn.textContent = `Logged: ${ev.name}`;
-      elements.loginBtn.style.background = "#28a745";
-    };
-    elements.evalListContainer.appendChild(btn);
-  });
-  elements.evalModal.classList.remove("hidden");
-
-  if (elements.cancelEvalBtn) {
-    elements.cancelEvalBtn.onclick = () => {
-      elements.evalModal.classList.add("hidden");
-      elements.loginBtn.textContent = "Login";
-    };
-  }
 }
 
 function initSearchModeSelector() {

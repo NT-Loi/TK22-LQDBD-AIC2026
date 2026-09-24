@@ -1,23 +1,56 @@
 import { elements } from "./elements.js";
 
+export class APIError extends Error {
+  constructor(message, status = 0, data = null) {
+    super(message);
+    this.name = "APIError";
+    this.status = status;
+    this.data = data;
+  }
+}
+
+async function requestJSON(url, options = {}) {
+  let response;
+  try {
+    response = await fetch(url, {
+      credentials: "same-origin",
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    throw new APIError("Không thể kết nối tới máy chủ ứng dụng", 0, error);
+  }
+
+  const rawText = await response.text();
+  let data = null;
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = rawText;
+    }
+  }
+
+  if (!response.ok) {
+    const message =
+      (data && typeof data === "object" && (data.detail || data.error || data.message)) ||
+      (typeof data === "string" && data) ||
+      `HTTP ${response.status}`;
+    throw new APIError(String(message), response.status, data);
+  }
+  return data;
+}
+
 export async function searchAPI(queryData) {
   elements.resultsContainer.innerHTML = "<p>Searching...</p>";
-
   try {
-    const response = await fetch("/search", {
+    return await requestJSON("/search", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(queryData),
     });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(
-        errorData.error || `HTTP error! status: ${response.status}`,
-      );
-    }
-
-    return await response.json();
   } catch (error) {
     console.error("Search failed:", error);
     elements.resultsContainer.innerHTML = `<p style="color: red;">An error occurred: ${error.message}</p>`;
@@ -25,50 +58,54 @@ export async function searchAPI(queryData) {
   }
 }
 
-export async function loginAPI() {
-  try {
-    const response = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}), // Dùng default credentials trong config.py
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || "Login failed");
-    }
-    return data;
-  } catch (error) {
-    console.error("Login error:", error);
-    throw error;
-  }
+export function getDresSessionAPI() {
+  return requestJSON("/api/dres/session");
 }
 
-export async function submitResultAPI(
-  sessionId,
-  evaluationId,
-  videoId,
-  timeMs,
-) {
-  try {
-    const response = await fetch("/api/submit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId,
-        evaluationId,
-        videoId,
-        timeMs,
-      }),
-    });
+export function loginDefaultAPI() {
+  return requestJSON("/api/dres/login/default", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
 
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || "Submit failed");
-    }
-    return data;
-  } catch (error) {
-    console.error("Submit error:", error);
-    throw error;
+export function loginAPI(username = null, password = null) {
+  if (username === null && password === null) {
+    return loginDefaultAPI();
   }
+  return requestJSON("/api/dres/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logoutAPI() {
+  return requestJSON("/api/dres/logout", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function getEvaluationsAPI() {
+  return requestJSON("/api/dres/evaluations");
+}
+
+export function selectEvaluationAPI(evaluationId) {
+  return requestJSON("/api/dres/evaluation", {
+    method: "POST",
+    body: JSON.stringify({ evaluationId }),
+  });
+}
+
+export function getCurrentTaskAPI(evaluationId) {
+  return requestJSON(
+    `/api/dres/current-task/${encodeURIComponent(evaluationId)}`,
+  );
+}
+
+export function submitResultAPI(submission) {
+  return requestJSON("/api/dres/submit", {
+    method: "POST",
+    body: JSON.stringify(submission),
+  });
 }

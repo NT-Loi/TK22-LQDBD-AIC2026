@@ -11,6 +11,7 @@ es_data
 .*
 !.gitignore
 !.env.example
+!.env.mock.example
 
 technical_report
 
