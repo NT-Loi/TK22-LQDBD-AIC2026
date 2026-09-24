@@ -15,12 +15,12 @@ uv run uvicorn scripts.mock_dres_server:app --host 127.0.0.1 --port 19100
 Mở terminal thứ hai:
 
 ```bash
-uv run --env-file .env.mock.example uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+uv run --env-file .env.mock.example uvicorn app:app --host 127.0.0.1 --port 8765 --reload
 ```
 
 Mở hai trang:
 
-- Giao diện ứng dụng: <http://127.0.0.1:8000>
+- Giao diện ứng dụng: <http://127.0.0.1:8765>
 - Gói tin Mock DRES nhận được: <http://127.0.0.1:19100/debug>
 
 Nếu trình duyệt từng mở phiên bản cũ, nhấn `Ctrl+Shift+R` một lần.
@@ -55,7 +55,8 @@ Password trong `.env.mock.example` chỉ là `mock-password`, không phải cred
 }
 ```
 
-6. Nhấn **Xác nhận nộp KIS**. Kết quả mong đợi là `mock-accepted-*`.
+6. Nhấn **Xác nhận nộp KIS**. Kết quả mặc định phải hiển thị
+   `DRES ĐÃ NHẬN • ĐÚNG`, HTTP `200`, verdict `CORRECT` và mô tả từ Mock DRES.
 7. Mở trang debug và đối chiếu `path`, `evaluationId` cùng `payload`.
 
 ## 4. Kiểm thử Q&A
@@ -87,7 +88,26 @@ TR-L24_V044-12,48,103
 
 7. Nhấn **Nộp TRAKE** và kiểm tra gói tin trên trang debug.
 
-## 6. Những điểm cần đánh giá về độ dễ dùng
+## 6. Kiểm thử verdict và lỗi
+
+Tại `http://127.0.0.1:19100/debug`, chọn **Phản hồi cho lần nộp kế tiếp** rồi
+nhấn **Áp dụng** trước khi nộp trên giao diện ứng dụng:
+
+| Lựa chọn | Kết quả mong đợi trên ứng dụng |
+| --- | --- |
+| `CORRECT` | `DRES ĐÃ NHẬN • ĐÚNG` |
+| `WRONG` | `DRES ĐÃ NHẬN • SAI`; không được ghi là lỗi gửi request |
+| `INDETERMINATE` | `DRES ĐÃ NHẬN • CHƯA XÁC ĐỊNH` |
+| `UNDECIDABLE` | `DRES ĐÃ NHẬN • KHÔNG THỂ CHẤM` |
+| `PENDING` | `DRES ĐÃ NHẬN • ĐANG CHỜ VERDICT`, HTTP DRES `202` |
+| `REJECTED` | `DRES TỪ CHỐI SUBMISSION`, HTTP `412` |
+| `SESSION_EXPIRED` | Yêu cầu đăng nhập lại, HTTP `401` |
+
+Mỗi lựa chọn chỉ áp dụng cho một lần nộp. Sau đó Mock tự trở về `CORRECT`.
+Mở mục **Phản hồi JSON từ DRES** để kiểm tra `status`, `submission` và
+`description`. Session trong URL phải luôn là `<SESSION_ID_ẨN>`.
+
+## 7. Những điểm cần đánh giá về độ dễ dùng
 
 - Có nhận ra tài khoản và evaluation hiện tại ngay không?
 - Có phân biệt rõ KIS, Q&A và TRAKE không?
@@ -99,6 +119,6 @@ TR-L24_V044-12,48,103
 
 Bạn có thể ghi nhận xét trực tiếp vào phần cuối của `KE_HOACH_DRES_LOGIN_SUBMIT.md`.
 
-## 7. Kết thúc kiểm thử
+## 8. Kết thúc kiểm thử
 
 Nhấn `Ctrl+C` ở cả hai terminal. Khi chạy lại ứng dụng bình thường mà không có `--env-file .env.mock.example`, backend sẽ quay về `DRES_BASE_URL` trong `.env` hoặc DRES chính thức mặc định.

@@ -617,18 +617,10 @@ async def dres_current_task(evaluation_id: str, request: Request):
 
 def _submission_fingerprint(
     evaluation_id: str,
-    task: dict[str, Any],
     payload: dict[str, Any],
 ) -> str:
-    task_identity = {
-        "id": task.get("id"),
-        "taskId": task.get("taskId"),
-        "name": task.get("name"),
-        "taskGroup": task.get("taskGroup"),
-        "taskType": task.get("taskType"),
-    }
     serialized = json.dumps(
-        {"evaluationId": evaluation_id, "task": task_identity, "payload": payload},
+        {"evaluationId": evaluation_id, "payload": payload},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -658,7 +650,6 @@ async def dres_submit(data: DresSubmissionData, request: Request):
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     task: dict[str, Any] | None = None
-    fingerprint: str | None = None
     try:
         task = await dres_client.current_task(session.dres_session_id, evaluation_id)
     except DresApiError as error:
@@ -668,33 +659,36 @@ async def dres_submit(data: DresSubmissionData, request: Request):
         if error.status_code != 404:
             raise _dres_http_error(error) from error
 
-    if task:
-        fingerprint = _submission_fingerprint(evaluation_id, task, payload)
-        if dres_sessions.has_fingerprint(local_id, fingerprint):
-            raise HTTPException(
-                status_code=409,
-                detail="Payload này đã được nộp cho task DRES hiện tại",
-            )
+    fingerprint = _submission_fingerprint(evaluation_id, payload)
+    if not dres_sessions.begin_submission(local_id, fingerprint):
+        raise HTTPException(
+            status_code=409,
+            detail="Submission giống hệt đang được gửi hoặc vừa được gửi. Hãy chờ 3 giây nếu bạn thực sự muốn nộp lại.",
+        )
 
     try:
-        status_code, dres_response = await dres_client.submit(
+        receipt = await dres_client.submit(
             session.dres_session_id,
             evaluation_id,
             payload,
         )
     except DresApiError as error:
+        dres_sessions.finish_submission(local_id, fingerprint, accepted=False)
         if error.status_code == 401:
             dres_sessions.delete(local_id)
         raise _dres_http_error(error) from error
+    except Exception:
+        dres_sessions.finish_submission(local_id, fingerprint, accepted=False)
+        raise
 
-    if fingerprint:
-        dres_sessions.record_fingerprint(local_id, fingerprint)
+    dres_sessions.finish_submission(local_id, fingerprint, accepted=True)
     session.selected_evaluation_id = evaluation_id
     return {
-        "accepted": True,
-        "pending": status_code == 202,
-        "dresStatus": status_code,
-        "result": dres_response,
+        **receipt,
+        "dresStatus": receipt["dresHttpStatus"],
+        "result": receipt["rawResult"],
+        "evaluationId": evaluation_id,
+        "destination": dres_client.masked_submission_url(evaluation_id),
         "payload": payload,
         "task": task,
     }

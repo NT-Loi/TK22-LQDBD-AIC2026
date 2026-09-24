@@ -12,7 +12,7 @@ from threading import RLock
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 
@@ -24,20 +24,38 @@ class LoginData(BaseModel):
     password: str
 
 
+class NextResponseData(BaseModel):
+    outcome: str
+
+
 MOCK_EVALUATION_ID = "mock-final"
 EVALUATIONS = [
     {
         "id": MOCK_EVALUATION_ID,
         "name": "MOCK • Chung kết AIC 2026",
+        "type": "SYNCHRONOUS",
         "status": "ACTIVE",
+        "templateId": "mock-template",
+        "teams": ["team_197"],
+        "taskTemplates": [],
     }
 ]
 
 MOCK_TASK = {
-    "id": "mock-task-manual",
     "name": "Mock Final • Chọn chế độ trên giao diện",
     "taskGroup": "AIC_FINAL",
     "taskType": "MANUAL",
+    "duration": 300,
+}
+
+MOCK_OUTCOMES = {
+    "CORRECT",
+    "WRONG",
+    "INDETERMINATE",
+    "UNDECIDABLE",
+    "PENDING",
+    "REJECTED",
+    "SESSION_EXPIRED",
 }
 
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
@@ -45,14 +63,39 @@ VIDEO_ID_RE = r"[A-Za-z0-9][A-Za-z0-9_.]*"
 
 _sessions: dict[str, str] = {}
 _submissions: list[dict[str, Any]] = []
+_next_response = "CORRECT"
 _lock = RLock()
 
 
 def reset_mock_state() -> None:
     """Reset in-memory state; primarily useful for automated tests."""
+    global _next_response
     with _lock:
         _sessions.clear()
         _submissions.clear()
+        _next_response = "CORRECT"
+
+
+def set_next_mock_response(outcome: str) -> None:
+    normalized = outcome.strip().upper()
+    if normalized not in MOCK_OUTCOMES:
+        raise ValueError("Phản hồi mock không được hỗ trợ")
+    global _next_response
+    with _lock:
+        _next_response = normalized
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(_: Request, error: HTTPException) -> JSONResponse:
+    detail = error.detail
+    if isinstance(detail, dict):
+        description = detail.get("description") or str(detail)
+    else:
+        description = str(detail)
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"status": False, "description": description},
+    )
 
 
 def _require_session(session: str) -> str:
@@ -179,14 +222,17 @@ async def submit(
     payload: dict[str, Any],
     request: Request,
     session: str = Query(...),
-) -> dict[str, Any]:
+) -> JSONResponse:
     username = _require_session(session)
     try:
         mode = _validate_submission(evaluation_id, payload)
     except ValueError as error:
         raise HTTPException(status_code=412, detail={"description": str(error)}) from error
 
+    global _next_response
     with _lock:
+        outcome = _next_response
+        _next_response = "CORRECT"
         submission_number = len(_submissions) + 1
         record = {
             "number": submission_number,
@@ -198,29 +244,66 @@ async def submit(
             "query": {"session": "<mock-session>"},
             "evaluationId": evaluation_id,
             "payload": deepcopy(payload),
+            "mockOutcome": outcome,
         }
         _submissions.append(record)
 
-    return {
-        "submission": f"mock-accepted-{submission_number}",
-        "verdict": "CORRECT (MOCK)",
-        "captured": record,
-    }
+    if outcome == "SESSION_EXPIRED":
+        return JSONResponse(
+            status_code=401,
+            content={"status": False, "description": "Mock session đã hết hạn"},
+        )
+    if outcome == "REJECTED":
+        return JSONResponse(
+            status_code=412,
+            content={"status": False, "description": "Mock DRES từ chối submission"},
+        )
+    if outcome == "PENDING":
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": True,
+                "submission": "INDETERMINATE",
+                "description": "Mock DRES đã nhận bài và đang chờ verdict",
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": True,
+            "submission": outcome,
+            "description": f"Mock verdict: {outcome}",
+        },
+    )
 
 
 @app.get("/api/v2/logout")
-async def logout(session: str = Query(...)) -> dict[str, str]:
+async def logout(session: str = Query(...)) -> dict[str, Any]:
     _require_session(session)
     with _lock:
         _sessions.pop(session, None)
-    return {"status": "success"}
+    return {"status": True, "description": "Mock logout thành công"}
 
 
 @app.get("/debug/submissions")
 async def debug_submissions() -> dict[str, Any]:
     with _lock:
         items = deepcopy(_submissions)
-    return {"count": len(items), "submissions": items}
+        next_response = _next_response
+    return {
+        "count": len(items),
+        "nextResponse": next_response,
+        "submissions": items,
+    }
+
+
+@app.post("/debug/next-response")
+async def debug_next_response(data: NextResponseData) -> dict[str, Any]:
+    try:
+        set_next_mock_response(data.outcome)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail={"description": str(error)}) from error
+    return {"status": True, "nextResponse": data.outcome.strip().upper()}
 
 
 @app.post("/debug/reset", response_class=RedirectResponse)
@@ -234,14 +317,35 @@ async def debug_reset() -> RedirectResponse:
 async def debug_page() -> str:
     with _lock:
         items = deepcopy(_submissions)
+        next_response = _next_response
     formatted = escape(json.dumps(items, ensure_ascii=False, indent=2))
     return f"""
     <html lang="vi"><head><meta charset="utf-8"><title>Mock DRES Packets</title>
-    <meta http-equiv="refresh" content="3"></head>
+    </head>
     <body style="font-family:system-ui;max-width:1100px;margin:30px auto;padding:0 20px;background:#0d1117;color:#e6edf3">
       <h1>Gói tin Mock DRES đã nhận: {len(items)}</h1>
-      <p>Trang tự làm mới mỗi 3 giây. Session đã được che.</p>
+      <p>Session đã được che. Phản hồi tự trở về CORRECT sau mỗi lần submit.</p>
+      <label for="next-response">Phản hồi cho lần nộp kế tiếp:</label>
+      <select id="next-response">
+        {''.join(f'<option value="{item}" {"selected" if item == next_response else ""}>{item}</option>' for item in sorted(MOCK_OUTCOMES))}
+      </select>
+      <button type="button" onclick="setNextResponse()">Áp dụng</button>
+      <strong id="next-response-status">Hiện tại: {next_response}</strong>
       <form method="post" action="/debug/reset"><button type="submit">Xóa lịch sử</button></form>
       <pre style="padding:16px;background:#161b22;border:1px solid #30363d;border-radius:8px;white-space:pre-wrap">{formatted or "Chưa có submission"}</pre>
+      <script>
+        async function setNextResponse() {{
+          const outcome = document.getElementById('next-response').value;
+          const response = await fetch('/debug/next-response', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{outcome}})
+          }});
+          const data = await response.json();
+          document.getElementById('next-response-status').textContent = response.ok
+            ? `Hiện tại: ${{data.nextResponse}}`
+            : `Lỗi: ${{data.description || 'không xác định'}}`;
+        }}
+      </script>
     </body></html>
     """

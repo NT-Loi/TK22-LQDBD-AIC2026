@@ -16,7 +16,8 @@ class DresSession:
     user: dict[str, Any]
     evaluations: list[dict[str, Any]]
     selected_evaluation_id: str | None = None
-    submitted_fingerprints: set[str] = field(default_factory=set)
+    in_flight_fingerprints: set[str] = field(default_factory=set)
+    recent_fingerprints: dict[str, datetime] = field(default_factory=dict)
     last_used: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -66,13 +67,36 @@ class DresSessionStore:
             session.selected_evaluation_id = evaluation_id
         return session
 
-    def has_fingerprint(self, local_id: str, fingerprint: str) -> bool:
+    def begin_submission(
+        self,
+        local_id: str,
+        fingerprint: str,
+        duplicate_window_seconds: float = 3.0,
+    ) -> bool:
         session = self.get(local_id)
-        return bool(session and fingerprint in session.submitted_fingerprints)
+        if session is None:
+            return False
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(seconds=duplicate_window_seconds)
+        with self._lock:
+            session.recent_fingerprints = {
+                key: submitted_at
+                for key, submitted_at in session.recent_fingerprints.items()
+                if submitted_at >= cutoff
+            }
+            if (
+                fingerprint in session.in_flight_fingerprints
+                or fingerprint in session.recent_fingerprints
+            ):
+                return False
+            session.in_flight_fingerprints.add(fingerprint)
+            return True
 
-    def record_fingerprint(self, local_id: str, fingerprint: str) -> None:
+    def finish_submission(self, local_id: str, fingerprint: str, accepted: bool) -> None:
         session = self.get(local_id)
         if session is None:
             return
         with self._lock:
-            session.submitted_fingerprints.add(fingerprint)
+            session.in_flight_fingerprints.discard(fingerprint)
+            if accepted:
+                session.recent_fingerprints[fingerprint] = datetime.now(UTC)

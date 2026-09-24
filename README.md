@@ -219,6 +219,19 @@ Hộp xác nhận hiển thị payload và đường gửi request trước khi 
 nộp ở chế độ thực tế đều có thể ảnh hưởng điểm thi, vì vậy cần kiểm tra kỹ URL,
 evaluation, chế độ và payload trước khi xác nhận.
 
+Sau khi nộp, giao diện hiển thị riêng trạng thái tiếp nhận và verdict:
+
+- `CORRECT`: DRES đã nhận và đáp án đúng.
+- `WRONG`: DRES đã nhận nhưng đáp án sai; đây không phải lỗi truyền request.
+- `INDETERMINATE`: DRES chưa xác định được kết quả.
+- `UNDECIDABLE`: DRES không thể chấm tự động.
+- HTTP `202`: DRES đã nhận và đang chờ verdict.
+- HTTP `412`: DRES từ chối submission; gói tin không được báo thành công.
+
+Thẻ kết quả còn hiển thị HTTP status, `description`, evaluation, URL đích đã che
+session và JSON phản hồi nguyên bản từ DRES. Có thể sao chép cả payload lẫn phản
+hồi để kiểm tra hoặc trao đổi với ban tổ chức.
+
 ### Chạy thử giao diện bằng Mock DRES
 
 Mock DRES dùng một evaluation duy nhất (`mock-final`) và cho phép chọn thủ công
@@ -252,6 +265,9 @@ Sau đó:
 4. Chọn KIS, Q&A hoặc TRAKE trong danh sách **Chế độ nộp** và nộp thử.
 5. Mở `http://127.0.0.1:19100/debug` để xem method, URL, query và JSON payload
    mà Mock DRES đã nhận.
+6. Tại trang Debug, chọn **Phản hồi cho lần nộp kế tiếp** để thử `CORRECT`,
+   `WRONG`, `INDETERMINATE`, `UNDECIDABLE`, `PENDING`, `REJECTED` hoặc
+   `SESSION_EXPIRED`. Sau một request, Mock tự trở về `CORRECT`.
 
 Không chạy ứng dụng thực tế và ứng dụng mock trên cùng một cổng. Sau khi đổi
 cấu hình DRES, phải khởi động lại tiến trình ứng dụng vì DRES client được tạo
@@ -263,18 +279,20 @@ Chạy toàn bộ test của tính năng đăng nhập, session, payload và Moc
 
 ```bash
 uv run python -m unittest \
+  tests.test_dres_api \
   tests.test_mock_dres_server \
   tests.test_dres_submission \
   tests.test_dres_client \
   tests.test_dres_session
 ```
 
-Kết quả mong đợi: `Ran 12 tests` và `OK`.
+Kết quả mong đợi: `Ran 24 tests` và `OK`.
 
 Kiểm tra cú pháp các module JavaScript của luồng nộp bài:
 
 ```bash
 node --check static/js/dres-session.js
+node --check static/js/dres-result.js
 node --check static/js/submission.js
 node --check static/js/trake.js
 ```
@@ -290,4 +308,5 @@ docker compose down
 Kế hoạch, tiêu chí nghiệm thu và hướng dẫn giao diện chi tiết:
 
 - [`KE_HOACH_DRES_LOGIN_SUBMIT.md`](KE_HOACH_DRES_LOGIN_SUBMIT.md)
+- [`KE_HOACH_HOAN_THIEN_PHAN_HOI_SUBMIT_DRES.md`](KE_HOACH_HOAN_THIEN_PHAN_HOI_SUBMIT_DRES.md)
 - [`HUONG_DAN_TEST_GIAO_DIEN_DRES.md`](HUONG_DAN_TEST_GIAO_DIEN_DRES.md)

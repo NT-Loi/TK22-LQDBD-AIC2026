@@ -7,7 +7,13 @@ import {
   refreshCurrentTask,
   requireDresReady,
 } from "./dres-session.js?v=11";
-import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=11";
+import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=12";
+import {
+  bindCopyButton,
+  clearDresResult,
+  renderDresError,
+  renderDresReceipt,
+} from "./dres-result.js?v=12";
 
 let candidate = null;
 let submitting = false;
@@ -76,9 +82,9 @@ function renderModal() {
   }
   if (preview) preview.textContent = JSON.stringify(dresPreview(mode, answer), null, 2);
   if (confirmButton) {
-    confirmButton.disabled = submitted || submitting || (mode === "qa" && !answer.trim());
+    confirmButton.disabled = submitting || (mode === "qa" && !answer.trim());
     confirmButton.textContent = submitted
-      ? "Đã nộp"
+      ? `Nộp lại ${mode.toUpperCase()}`
       : (submitting ? "Đang nộp..." : `Xác nhận nộp ${mode.toUpperCase()}`);
   }
 }
@@ -93,8 +99,7 @@ function openSubmissionModal(item) {
   const result = document.getElementById("submission-result");
   submitted = false;
   if (result) {
-    result.textContent = "";
-    result.className = "submission-result";
+    clearDresResult(result);
   }
   const answerInput = document.getElementById("qa-answer-input");
   if (answerInput) answerInput.value = "";
@@ -137,7 +142,7 @@ export function handlePlayerSubmission({ videoId, currentTime, fps }) {
 }
 
 async function confirmSubmission() {
-  if (submitted || submitting || !candidate || !requireDresReady()) return;
+  if (submitting || !candidate || !requireDresReady()) return;
   const mode = getSubmissionMode();
   if (mode === "trake") {
     addTrakeCandidate(candidate);
@@ -165,19 +170,12 @@ async function confirmSubmission() {
       timeMs: candidate.timeMs,
       answer: mode === "qa" ? answer : null,
     });
-    if (resultBox) {
-      resultBox.textContent = result.pending
-        ? "DRES đã nhận bài, đang chờ verdict."
-        : `DRES đã nhận bài: ${result.result?.submission || "accepted"}`;
-      resultBox.className = "submission-result success";
-    }
+    renderDresReceipt(resultBox, result);
     submitted = true;
   } catch (error) {
     if (error.status === 401) handleSessionExpired();
-    if (resultBox) {
-      resultBox.textContent = `Nộp bài thất bại: ${error.message}`;
-      resultBox.className = "submission-result error";
-    }
+    submitted = false;
+    renderDresError(resultBox, error);
   } finally {
     submitting = false;
     renderModal();
@@ -208,8 +206,18 @@ export function initSubmissionUI() {
     document.getElementById("submission-modal")?.classList.add("hidden");
   });
   document.getElementById("confirm-submission-btn")?.addEventListener("click", confirmSubmission);
-  document.getElementById("qa-answer-input")?.addEventListener("input", renderModal);
+  document.getElementById("qa-answer-input")?.addEventListener("input", () => {
+    submitted = false;
+    clearDresResult(document.getElementById("submission-result"));
+    renderModal();
+  });
+  bindCopyButton(
+    document.getElementById("copy-submission-payload-btn"),
+    () => document.getElementById("submission-payload-preview")?.textContent || "",
+  );
   document.addEventListener("dres:mode-change", () => {
+    submitted = false;
+    clearDresResult(document.getElementById("submission-result"));
     updateSubmitButtonLabels();
     renderModal();
   });

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
+
+
+DRES_VERDICTS = frozenset({"CORRECT", "WRONG", "INDETERMINATE", "UNDECIDABLE"})
 
 
 @dataclass(slots=True)
@@ -116,7 +119,7 @@ class DresClient:
     async def current_task(self, session_id: str, evaluation_id: str) -> dict[str, Any]:
         response = await self._request(
             "GET",
-            f"/api/v2/client/evaluation/currentTask/{evaluation_id}",
+            f"/api/v2/client/evaluation/currentTask/{quote(evaluation_id, safe='')}",
             params={"session": session_id},
         )
         data = self._response_body(response)
@@ -129,15 +132,25 @@ class DresClient:
         session_id: str,
         evaluation_id: str,
         payload: dict[str, Any],
-    ) -> tuple[int, Any]:
+    ) -> dict[str, Any]:
         response = await self._request(
             "POST",
-            f"/api/v2/submit/{evaluation_id}",
+            f"/api/v2/submit/{quote(evaluation_id, safe='')}",
             params={"session": session_id},
             json=payload,
             expected_statuses={200, 202},
         )
-        return response.status_code, self._response_body(response)
+        return normalize_submission_response(
+            response.status_code,
+            self._response_body(response),
+        )
+
+    def masked_submission_url(self, evaluation_id: str) -> str:
+        encoded_evaluation = quote(evaluation_id, safe="")
+        return (
+            f"{self.base_url}/api/v2/submit/{encoded_evaluation}"
+            "?session=<SESSION_ID_ẨN>"
+        )
 
     async def logout(self, session_id: str) -> None:
         await self._request(
@@ -145,3 +158,42 @@ class DresClient:
             "/api/v2/logout",
             params={"session": session_id},
         )
+
+
+def normalize_submission_response(status_code: int, data: Any) -> dict[str, Any]:
+    """Validate and normalize DRES SuccessfulSubmissionsStatus."""
+    if not isinstance(data, dict):
+        raise DresApiError(502, "Phản hồi submit của DRES không phải JSON object", data)
+
+    description = data.get("description")
+    if not isinstance(description, str):
+        raise DresApiError(502, "Phản hồi submit của DRES thiếu description", data)
+
+    if data.get("status") is not True:
+        message = description.strip() or "DRES không xác nhận đã tiếp nhận submission"
+        raise DresApiError(502, message, data)
+
+    pending = status_code == 202
+    verdict: str | None = None
+    if not pending:
+        candidate = data.get("submission")
+        if candidate not in DRES_VERDICTS:
+            raise DresApiError(502, "Phản hồi submit của DRES có verdict không hợp lệ", data)
+        verdict = candidate
+
+    safe_raw_result = {
+        "status": True,
+        "description": description,
+    }
+    raw_submission = data.get("submission")
+    if raw_submission in DRES_VERDICTS:
+        safe_raw_result["submission"] = raw_submission
+
+    return {
+        "accepted": True,
+        "pending": pending,
+        "dresHttpStatus": status_code,
+        "verdict": verdict,
+        "description": description,
+        "rawResult": safe_raw_result,
+    }

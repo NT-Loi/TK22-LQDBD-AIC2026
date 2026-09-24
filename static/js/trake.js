@@ -7,10 +7,22 @@ import {
   refreshCurrentTask,
   requireDresReady,
 } from "./dres-session.js?v=11";
+import {
+  bindCopyButton,
+  clearDresResult,
+  renderDresError,
+  renderDresReceipt,
+} from "./dres-result.js?v=12";
 
 let trakeVideoId = null;
 let trakeFrames = [];
 let submitting = false;
+let submitted = false;
+
+function resetReceipt() {
+  submitted = false;
+  clearDresResult(document.getElementById("trake-result"));
+}
 
 function normalizeCandidate(candidate) {
   const videoId = String(candidate.videoId || candidate.video_id || "").trim();
@@ -72,6 +84,7 @@ function render() {
         document.dispatchEvent(new CustomEvent("trake:open-frame", { detail: item }));
       } else if (action === "remove") {
         trakeFrames.splice(index, 1);
+        resetReceipt();
       } else if (action === "replace") {
         const rawFrame = prompt("Frame ID thay thế:", String(item.frameId));
         if (rawFrame === null) return;
@@ -89,10 +102,13 @@ function render() {
           frameId,
           timeMs: Math.round((frameId / item.fps) * 1000),
         };
+        resetReceipt();
       } else if (action === "up" && index > 0) {
         [trakeFrames[index - 1], trakeFrames[index]] = [trakeFrames[index], trakeFrames[index - 1]];
+        resetReceipt();
       } else if (action === "down" && index < trakeFrames.length - 1) {
         [trakeFrames[index + 1], trakeFrames[index]] = [trakeFrames[index], trakeFrames[index + 1]];
+        resetReceipt();
       }
       if (!trakeFrames.length) trakeVideoId = null;
       render();
@@ -112,7 +128,12 @@ function render() {
     routePreview.textContent = `POST ${routes.application}\n→ POST ${routes.dres}`;
   }
   if (count) count.textContent = String(trakeFrames.length);
-  if (submitButton) submitButton.disabled = submitting || !trakeFrames.length || !isStrictlyIncreasing();
+  if (submitButton) {
+    submitButton.disabled = submitting || !trakeFrames.length || !isStrictlyIncreasing();
+    submitButton.textContent = submitting
+      ? "Đang nộp..."
+      : (submitted ? "Nộp lại TRAKE" : "Nộp TRAKE");
+  }
 }
 
 export function openTrakeWorkspace() {
@@ -132,6 +153,7 @@ export function addTrakeCandidate(candidate) {
     const reset = confirm(`TRAKE hiện tại thuộc ${trakeVideoId}. Xóa chuỗi cũ và chuyển sang ${item.videoId}?`);
     if (!reset) return;
     trakeFrames = [];
+    resetReceipt();
   }
   if (trakeFrames.some((frame) => frame.frameId === item.frameId)) {
     alert(`Frame ${item.frameId} đã có trong TRAKE.`);
@@ -139,6 +161,7 @@ export function addTrakeCandidate(candidate) {
   }
   trakeVideoId = item.videoId;
   trakeFrames.push(item);
+  resetReceipt();
   openTrakeWorkspace();
 }
 
@@ -157,6 +180,7 @@ export function loadTrakeSequence(frames) {
   trakeFrames = normalized.filter(
     (item, index, items) => items.findIndex((other) => other.frameId === item.frameId) === index,
   );
+  resetReceipt();
   openTrakeWorkspace();
 }
 
@@ -186,18 +210,12 @@ async function submitTrake() {
       videoId: trakeVideoId,
       frameIds: trakeFrames.map((item) => item.frameId),
     });
-    if (status) {
-      status.textContent = result.pending
-        ? "DRES đã nhận, đang chờ verdict."
-        : `DRES đã nhận: ${result.result?.submission || "accepted"}`;
-      status.classList.remove("error");
-    }
+    submitted = true;
+    renderDresReceipt(document.getElementById("trake-result"), result);
   } catch (error) {
     if (error.status === 401) handleSessionExpired();
-    if (status) {
-      status.textContent = `Nộp TRAKE thất bại: ${error.message}`;
-      status.classList.add("error");
-    }
+    submitted = false;
+    renderDresError(document.getElementById("trake-result"), error);
   } finally {
     submitting = false;
     render();
@@ -213,8 +231,13 @@ export function initTrakeWorkspace() {
     if (trakeFrames.length && !confirm("Xóa toàn bộ chuỗi TRAKE hiện tại?")) return;
     trakeFrames = [];
     trakeVideoId = null;
+    resetReceipt();
     render();
   });
+  bindCopyButton(
+    document.getElementById("copy-trake-payload-btn"),
+    previewText,
+  );
   document.getElementById("trake-submit-btn")?.addEventListener("click", submitTrake);
   document.addEventListener("dres:mode-change", (event) => {
     if (event.detail === "trake") openTrakeWorkspace();

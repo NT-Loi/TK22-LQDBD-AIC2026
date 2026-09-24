@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Retrieval - AIC 2026</title>
-  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="/static/style.css?v=10">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 
@@ -387,13 +387,14 @@
       </div>
       <label class="submission-preview-label" for="submission-payload-preview">Payload gửi DRES</label>
       <pre id="submission-payload-preview" class="submission-preview"></pre>
+      <button id="copy-submission-payload-btn" type="button" class="dres-copy-btn">Sao chép payload</button>
       <label class="submission-preview-label" for="submission-route-preview">Đường gửi request</label>
       <code id="submission-route-preview" class="submission-route-preview"></code>
       <p class="submission-route-note">Session DRES do backend gắn vào query và luôn được che trên giao diện.</p>
       <p class="submission-warning">
         Nộp sai bị trừ 10 điểm. Thời điểm nộp ảnh hưởng trực tiếp đến điểm số.
       </p>
-      <p id="submission-result" class="submission-result" role="status"></p>
+      <div id="submission-result" class="submission-result" role="status" aria-live="polite"></div>
       <div class="submission-actions">
         <button id="cancel-submission-btn" type="button" class="dres-secondary-btn">Quay lại</button>
         <button id="confirm-submission-btn" type="button" class="dres-primary-btn">Xác nhận nộp</button>
@@ -415,7 +416,9 @@
     <div class="trake-preview-wrap">
       <span>Chuỗi sẽ gửi</span>
       <code id="trake-preview">TR-&lt;VIDEO_ID&gt;-&lt;FRAME_IDS&gt;</code>
+      <button id="copy-trake-payload-btn" type="button" class="dres-copy-btn">Sao chép payload</button>
     </div>
+    <div id="trake-result" class="submission-result" role="status" aria-live="polite"></div>
     <div class="trake-preview-wrap">
       <span>Đường gửi request</span>
       <code id="trake-route-preview" class="submission-route-preview"></code>
@@ -427,7 +430,7 @@
     </div>
   </aside>
 
-  <script type="module" src="/static/js/main.js?v=11"></script>
+  <script type="module" src="/static/js/main.js?v=12"></script>
 </body>
 
 </html>

@@ -4,7 +4,7 @@ import {
   getSubmissionButtonLabel,
   handleSequenceSubmission,
   handleSubmissionCandidate,
-} from "./submission.js?v=11";
+} from "./submission.js?v=12";
 
 // Helper: Shuffle array
 function shuffleArray(array) {

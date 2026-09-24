@@ -2,7 +2,7 @@ import { elements } from "./elements.js";
 import {
   getSubmissionButtonLabel,
   handlePlayerSubmission,
-} from "./submission.js?v=11";
+} from "./submission.js?v=12";
 
 let currentOpenVideoId = null;
 
