@@ -1,6 +1,9 @@
 import logging
 import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Configure logging to output to both console and a file called 'app.log'
 logging.basicConfig(
     level=logging.WARNING,
@@ -10,6 +13,10 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
+for _handler in logging.getLogger().handlers:
+    _stream = getattr(_handler, "stream", None)
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 import os
 import torch
@@ -18,7 +25,7 @@ from tqdm import tqdm
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams, QueryRequest
 from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
@@ -102,29 +109,31 @@ class RetrievalSystem:
         if init_text_encoders:
             logger.info("Initializing text encoders...")
             for model_name in TEXT_ENCODERS:
-                if model_name == "CLIP_H14":
-                    self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
-
-                if model_name == "SigLIP":
-                    self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
-
-                if model_name == "SigLIP2":
-                    self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
-
-                if model_name == "Qwen3_VL_Embedding":
-                    self.text_encoders[model_name] = Qwen3VLEmbeddingTextEncoder(device=self.device)
-
-                if model_name == "FG_CLIP2":
-                    self.text_encoders[model_name] = FGCLIP2TextEncoder(device=self.device)
-
-                if model_name == "Qwen3_Embedding":
-                    self.text_encoders[model_name] = Qwen3EmbeddingTextEncoder(device=self.device)
+                if model_name == CAPTION_MODEL and not self.qdrant_client.collection_exists(QDRANT_SHOT_CAPTION_COLLECTION_NAME):
+                    logger.warning("Skipping caption encoder '%s': caption vector collection is absent.", model_name)
+                    continue
+                try:
+                    if model_name == "CLIP_H14":
+                        self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
+                    elif model_name == "SigLIP":
+                        self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
+                    elif model_name == "SigLIP2":
+                        self.text_encoders[model_name] = SigLIP2TextEncoder(device=self.device)
+                    elif model_name == "Qwen3_VL_Embedding":
+                        self.text_encoders[model_name] = Qwen3VLEmbeddingTextEncoder(device=self.device)
+                    elif model_name == "FG_CLIP2":
+                        self.text_encoders[model_name] = FGCLIP2TextEncoder(device=self.device)
+                    elif model_name == "Qwen3_Embedding":
+                        self.text_encoders[model_name] = Qwen3EmbeddingTextEncoder(device=self.device)
+                except Exception:
+                    logger.exception("Failed to initialize text encoder '%s'; continuing without it.", model_name)
 
         # High-capacity thread-safe LRU cache for query text embeddings (up to 8,192 queries)
         self.query_cache = ThreadSafeLRUCache(maxsize=8192)
 
         # Pre-load shot boundaries on RAM to efficiently group frame by
         self.shots_data = {}
+        self.shot_starts = {}
         self._load_shots()
 
         # Pre-index sorted keyframe indices per video into RAM for fast O(log K) shot expansion
@@ -132,30 +141,55 @@ class RetrievalSystem:
         self._load_video_keyframes()
 
     def _load_video_keyframes(self):
-        """Pre-index all video keyframes into RAM for fast in-memory shot expansion."""
+        """Pre-index keyframes, reusing cached entries for unchanged video directories."""
         kf_base = getattr(self, "keyframe_dir", self.data_dir / "keyframe")
         if not kf_base.exists() or not kf_base.is_dir():
             logger.warning(f"Keyframe directory {kf_base} does not exist.")
             return
 
         logger.info("Pre-indexing video keyframes into RAM...")
+        cache_path = self.data_dir / ".cache" / "keyframe_index.json"
+        cached_videos = {}
+        try:
+            cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if cached_data.get("version") == 1:
+                cached_videos = cached_data.get("videos", {})
+        except (OSError, ValueError, TypeError):
+            pass
+
         count = 0
+        cache_out = {}
         try:
             for vid_entry in os.scandir(kf_base):
                 if vid_entry.is_dir():
                     vid = vid_entry.name
-                    indices = []
-                    for f_entry in os.scandir(vid_entry.path):
-                        fname = f_entry.name
-                        if fname.startswith("keyframe_") and fname.endswith(".webp"):
-                            try:
-                                idx = int(fname[9:-5])
-                                indices.append(idx)
-                            except ValueError:
-                                continue
-                    indices.sort()
+                    mtime_ns = vid_entry.stat().st_mtime_ns
+                    cached = cached_videos.get(vid, {})
+                    if cached.get("mtime_ns") == mtime_ns:
+                        indices = cached.get("indices", [])
+                    else:
+                        indices = []
+                        for f_entry in os.scandir(vid_entry.path):
+                            fname = f_entry.name
+                            if fname.startswith("keyframe_") and fname.endswith(".webp"):
+                                try:
+                                    indices.append(int(fname[9:-5]))
+                                except ValueError:
+                                    continue
+                        indices.sort()
                     self.video_keyframes[vid] = indices
+                    cache_out[vid] = {"mtime_ns": mtime_ns, "indices": indices}
                     count += 1
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = cache_path.with_suffix(".tmp")
+                tmp_path.write_text(
+                    json.dumps({"version": 1, "videos": cache_out}, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                os.replace(tmp_path, cache_path)
+            except OSError as e:
+                logger.warning("Could not persist keyframe index cache: %s", e)
             logger.info(f"Pre-indexed keyframes for {count} videos into RAM.")
         except Exception as e:
             logger.error(f"Error pre-indexing keyframes: {e}")
@@ -189,7 +223,9 @@ class RetrievalSystem:
                         for video_key, boundaries in data.items():
                             video_id = video_key.split(".")[0]
                             # Sort just in case
-                            self.shots_data[video_id] = sorted(boundaries, key=lambda x: x[0])
+                            sorted_boundaries = sorted(boundaries, key=lambda x: x[0])
+                            self.shots_data[video_id] = sorted_boundaries
+                            self.shot_starts[video_id] = [boundary[0] for boundary in sorted_boundaries]
                 except Exception as e:
                     logger.error(f"Error loading {filename}: {e}")
 
@@ -794,7 +830,9 @@ class RetrievalSystem:
         boundaries = self.shots_data[video_id]
         if not boundaries:
             return False
-        starts = [b[0] for b in boundaries]
+        starts = getattr(self, "shot_starts", {}).get(video_id)
+        if starts is None:
+            starts = [b[0] for b in boundaries]
         idx1 = bisect.bisect_right(starts, kf1) - 1
         if idx1 >= 0 and kf1 <= boundaries[idx1][1]:
             return boundaries[idx1][0] <= kf2 <= boundaries[idx1][1]
@@ -1246,13 +1284,16 @@ class RetrievalSystem:
         # Parallel Qdrant queries across models using HNSW approximate search
         def _query_model(m_name, vector):
             q_vec = vector[0].tolist()
+            payload_fields = ["video_id", "keyframe_idx", "frame_idx"]
+            if objects:
+                payload_fields.extend(["objects", "class_counts"])
             res = self.qdrant_client.query_points(
                 collection_name=QDRANT_COLLECTION_NAME,
                 query=q_vec,
                 using=m_name,
                 limit=top_k,
                 search_params=SearchParams(exact=False, hnsw_ef=HNSW_EF_SEARCH),
-                with_payload=True
+                with_payload=payload_fields
             ).points
             if objects:
                 res = [hit for hit in res if self._matches_object_filters(hit.payload, objects)]
@@ -1260,12 +1301,45 @@ class RetrievalSystem:
 
         model_results = {}
         if len(encoded_vectors) > 1:
-            with ThreadPoolExecutor(max_workers=len(encoded_vectors)) as executor:
-                futures = [executor.submit(_query_model, m, v) for m, v in encoded_vectors.items()]
-                for f in futures:
-                    m, res = f.result()
+            # Send all vector searches in one Qdrant request. This preserves
+            # each independent nearest-neighbour result while avoiding one
+            # transport round trip per model.
+            try:
+                is_real_qdrant_client = isinstance(self.qdrant_client, QdrantClient)
+                if not is_real_qdrant_client:
+                    raise TypeError("batch API unavailable on the injected Qdrant client")
+                model_items = list(encoded_vectors.items())
+                payload_fields = ["video_id", "keyframe_idx", "frame_idx"]
+                if objects:
+                    payload_fields.extend(["objects", "class_counts"])
+                batch_responses = self.qdrant_client.query_batch_points(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    requests=[
+                        QueryRequest(
+                            query=vector[0].tolist(),
+                            using=model_name,
+                            limit=top_k,
+                            params=SearchParams(exact=False, hnsw_ef=HNSW_EF_SEARCH),
+                            with_payload=payload_fields,
+                        )
+                        for model_name, vector in model_items
+                    ],
+                )
+                for (model_name, _), response in zip(model_items, batch_responses):
+                    res = response.points
+                    if objects:
+                        res = [hit for hit in res if self._matches_object_filters(hit.payload, objects)]
                     if res:
-                        model_results[m] = res
+                        model_results[model_name] = res
+            except Exception as exc:
+                if isinstance(self.qdrant_client, QdrantClient):
+                    logger.warning("Batched Qdrant query failed; retrying per model: %s", exc)
+                with ThreadPoolExecutor(max_workers=len(encoded_vectors)) as executor:
+                    futures = [executor.submit(_query_model, m, v) for m, v in encoded_vectors.items()]
+                    for future in futures:
+                        model_name, res = future.result()
+                        if res:
+                            model_results[model_name] = res
         elif len(encoded_vectors) == 1:
             m, v = next(iter(encoded_vectors.items()))
             _, res = _query_model(m, v)
@@ -1374,7 +1448,9 @@ class RetrievalSystem:
                 # Binary search to find the shot containing keyframe_idx
                 boundaries = self.shots_data[video_id]
                 # Extract just the start frames for bisect
-                starts = [b[0] for b in boundaries]
+                starts = getattr(self, "shot_starts", {}).get(video_id)
+                if starts is None:
+                    starts = [b[0] for b in boundaries]
                 idx = bisect.bisect_right(starts, keyframe_idx) - 1
                 if idx >= 0 and keyframe_idx <= boundaries[idx][1]:
                     shot_start = boundaries[idx][0]
@@ -1389,6 +1465,8 @@ class RetrievalSystem:
                 "ocr_text": ocr_text_map.get((video_id, keyframe_idx), ""),
                 "audio_text": self._get_audio_text_for_frame(video_id, keyframe_idx, transcript_ranges)
             })
+            if not group_by_shot and len(results) >= limit:
+                break
             
         if group_by_shot:
             shot_dict = {}
@@ -1622,7 +1700,7 @@ class RetrievalSystem:
         if AUTO_TRANSLATE_EN_CAPTION:
             trans_text, was_en = translate_query_to_vi_if_needed(query)
             if was_en:
-                logger.info(f"🌐 Caption search auto-translated EN query: '{query}' -> '{trans_text}'")
+                logger.info("Caption search auto-translated EN query: '%s' -> '%s'", query, trans_text)
                 search_query = trans_text
                 translated_query_str = trans_text
 
