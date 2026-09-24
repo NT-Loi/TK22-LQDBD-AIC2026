@@ -186,7 +186,7 @@ class Qwen3VLEmbeddingTextEncoder(TextEncoder):
                 {"role": "system", "content": [{"type": "text", "text": f"{task}"}]},
                 {"role": "user", "content": [{"type": "text", "text": q}]}
             ]
-            texts.append(self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
+            texts.append(self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
 
         max_length = max_length or self.max_length
         inputs = self.processor(text=texts, padding=True, truncation=True, max_length=max_length, return_tensors="pt").to(self.device)
