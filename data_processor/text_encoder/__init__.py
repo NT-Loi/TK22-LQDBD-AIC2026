@@ -17,29 +17,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 hf_token = os.getenv("HF_TOKEN", None)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _model_source(model_id: str, local_dir_name: str = None) -> str:
-    """Prefer a complete project-local model directory when one is available."""
-    if local_dir_name:
-        local_path = PROJECT_ROOT / "data" / "models" / local_dir_name
-        if (local_path / "config.json").is_file():
-            return str(local_path)
-    return model_id
-
-
-def _from_pretrained_local_first(loader, model_id: str, **kwargs):
-    """Use the HF cache without a network probe, falling back to normal download behavior."""
-    try:
-        return loader.from_pretrained(model_id, local_files_only=True, **kwargs)
-    except OSError:
-        return loader.from_pretrained(model_id, **kwargs)
 
 import torch
 import torch.nn as nn
@@ -142,13 +122,13 @@ class SigLIP2TextEncoder(TextEncoder):
         model_id = "google/siglip2-giant-opt-patch16-384"
         logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
         from transformers import AutoProcessor, SiglipModel
-        self.model = _from_pretrained_local_first(SiglipModel, model_id, token=hf_token)
+        self.model = SiglipModel.from_pretrained(model_id, token=hf_token)
 
         del self.model.vision_model
 
         self.model = self.model.to(self.device)
         self.model.eval()
-        self.processor = _from_pretrained_local_first(AutoProcessor, model_id)
+        self.processor = AutoProcessor.from_pretrained(model_id)
         logger.info("SigLIP2TextEncoder initialized successfully.")
 
         self.max_length = 64
@@ -169,12 +149,10 @@ class Qwen3VLEmbeddingTextEncoder(TextEncoder):
     def __init__(self, device: str = None, model_id: str = "Qwen/Qwen3-VL-Embedding-2B"):
         super().__init__(device)
 
-        model_source = _model_source(model_id, "Qwen3-VL-Embedding-2B")
-        logger.info(f"Loading model '{model_source}' to device '{self.device}'...")
+        logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
         from transformers import AutoProcessor, AutoModel
-        self.model = _from_pretrained_local_first(
-            AutoModel,
-            model_source,
+        self.model = AutoModel.from_pretrained(
+            model_id,
             # The checkpoint is BF16. Expanding it to FP32 on CPU roughly
             # doubles resident memory and can kill the app when SigLIP2 is
             # loaded at the same time.
@@ -188,7 +166,7 @@ class Qwen3VLEmbeddingTextEncoder(TextEncoder):
 
         self.model = self.model.to(self.device)
         self.model.eval()
-        self.processor = _from_pretrained_local_first(AutoProcessor, model_source)
+        self.processor = AutoProcessor.from_pretrained(model_id)
 
         logger.info("Qwen3VLTextEncoder initialized successfully.")
 
@@ -293,8 +271,8 @@ class Qwen3EmbeddingTextEncoder(TextEncoder):
 
         logger.info(f"Loading model '{model_id}' to device '{self.device}'...")
         from transformers import AutoTokenizer, AutoModel
-        self.tokenizer = _from_pretrained_local_first(AutoTokenizer, model_id, padding_side='left')
-        self.model = _from_pretrained_local_first(AutoModel, model_id, token=hf_token)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left')
+        self.model = AutoModel.from_pretrained(model_id, token=hf_token)
         self.model = self.model.to(self.device)
         self.model.eval()
         logger.info("Qwen3EmbeddingTextEncoder initialized successfully.")

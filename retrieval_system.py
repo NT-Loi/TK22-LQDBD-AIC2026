@@ -109,9 +109,6 @@ class RetrievalSystem:
         if init_text_encoders:
             logger.info("Initializing text encoders...")
             for model_name in TEXT_ENCODERS:
-                if model_name == CAPTION_MODEL and not self.qdrant_client.collection_exists(QDRANT_SHOT_CAPTION_COLLECTION_NAME):
-                    logger.warning("Skipping caption encoder '%s': caption vector collection is absent.", model_name)
-                    continue
                 try:
                     if model_name == "CLIP_H14":
                         self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
