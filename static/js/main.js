@@ -262,9 +262,58 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 });
 
+// --- AUTO-EXPAND TEXTAREA LOGIC ---
+export function autoResizeTextarea(textarea) {
+  if (!textarea) return;
+
+  const isSmall = textarea.classList.contains("event-ocr-input") || textarea.classList.contains("event-audio-input");
+  const minHeight = isSmall ? 28 : 35;
+  const maxHeight = isSmall ? 160 : 300;
+
+  textarea.style.height = "auto";
+  const scrollHeight = textarea.scrollHeight;
+
+  if (scrollHeight <= minHeight) {
+    textarea.style.height = minHeight + "px";
+    textarea.style.overflowY = "hidden";
+  } else if (scrollHeight >= maxHeight) {
+    textarea.style.height = maxHeight + "px";
+    textarea.style.overflowY = "auto";
+  } else {
+    textarea.style.height = scrollHeight + "px";
+    textarea.style.overflowY = "hidden";
+  }
+}
+
 // --- LOGIC INPUT ĐỘNG ---
 function initDynamicInputs() {
   if (!elements.addQueryBtn) return;
+
+  // Lắng nghe sự kiện input để tự động mở rộng / thu nhỏ khung nhập khi gõ hoặc dán text
+  document.addEventListener("input", (e) => {
+    if (e.target && e.target.matches("textarea.query-auto-expand")) {
+      autoResizeTextarea(e.target);
+    }
+  });
+
+  // Nhấn Enter để gửi truy vấn tìm kiếm ngay lập tức (Shift + Enter để xuống dòng thủ công)
+  document.addEventListener("keydown", (e) => {
+    if (e.target && e.target.matches("textarea.query-auto-expand")) {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        if (elements.searchForm) {
+          if (typeof elements.searchForm.requestSubmit === "function") {
+            elements.searchForm.requestSubmit();
+          } else {
+            elements.searchForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+          }
+        }
+      }
+    }
+  });
+
+  // Khởi tạo kích thước ban đầu cho tất cả các query textareas hiện có trên DOM
+  document.querySelectorAll("textarea.query-auto-expand").forEach(autoResizeTextarea);
 
   // Toggle event filter panel
   if (elements.queryInputsContainer) {
@@ -274,12 +323,17 @@ function initDynamicInputs() {
         const row = toggleBtn.closest(".query-row");
         const panel = row ? row.querySelector(".event-filter-panel") : null;
         if (panel) {
-          panel.style.display = panel.style.display === "none" ? "block" : "none";
+          const isNowVisible = panel.style.display === "none";
+          panel.style.display = isNowVisible ? "block" : "none";
+          if (isNowVisible) {
+            panel.querySelectorAll("textarea.query-auto-expand").forEach(autoResizeTextarea);
+          }
         }
       }
       if (e.target.classList.contains("remove-query-btn")) {
-        e.target.closest(".query-row").remove();
+        e.target.closest(".query-row")?.remove();
         reindexRows();
+        updateRemoveButtons();
       }
     });
   }
@@ -295,17 +349,17 @@ function initDynamicInputs() {
     div.style.marginTop = "5px";
 
     div.innerHTML = `
-      <div style="display: flex; gap: 5px;">
-        <input type="text" name="description_${newIndex}" class="main-query-input" placeholder="Next Event (approx. 1 min later)..." autocomplete="off" style="flex:1;">
-        <button type="button" class="toggle-event-filter-btn" style="background: #238636; color: white; border: none; border-radius: 4px; padding: 0 8px; font-size: 12px; cursor: pointer;" title="Event Sub-filters">⚙️ Filters</button>
-        <button type="button" class="remove-query-btn" style="background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer; padding:0 8px;">X</button>
+      <div style="display: flex; gap: 5px; align-items: flex-start;">
+        <textarea name="description_${newIndex}" class="main-query-input query-auto-expand" rows="1" placeholder="Next Event (approx. 1 min later)..." autocomplete="off" style="flex:1;"></textarea>
+        <button type="button" class="toggle-event-filter-btn" title="Event Sub-filters">⚙️ Filters</button>
+        <button type="button" class="remove-query-btn">X</button>
       </div>
       <div class="event-filter-panel" style="display: none; margin-top: 6px; padding: 6px; background: rgba(255,255,255,0.05); border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
         <div style="margin-bottom: 4px;">
           <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">📝 Event ${newIndex + 1} OCR Filter:</label>
-          <div style="display: flex; gap: 4px;">
-            <input type="text" class="event-ocr-input sidebar-input" placeholder="OCR for Event ${newIndex + 1}..." style="font-size: 11px; padding: 4px;">
-            <select class="event-ocr-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
+          <div style="display: flex; gap: 4px; align-items: flex-start;">
+            <textarea class="event-ocr-input sidebar-input query-auto-expand" rows="1" placeholder="OCR for Event ${newIndex + 1}..." style="flex: 1;"></textarea>
+            <select class="event-ocr-level sidebar-select-sm" style="width: 65px; font-size: 11px; height: 28px; flex-shrink: 0;">
               <option value="frame" selected>Frame</option>
               <option value="video">Video</option>
             </select>
@@ -313,9 +367,9 @@ function initDynamicInputs() {
         </div>
         <div>
           <label style="font-size: 11px; color: #8b949e; display: block; margin-bottom: 2px;">🎙️ Event ${newIndex + 1} Audio Filter:</label>
-          <div style="display: flex; gap: 4px;">
-            <input type="text" class="event-audio-input sidebar-input" placeholder="Audio for Event ${newIndex + 1}..." style="font-size: 11px; padding: 4px;">
-            <select class="event-audio-level sidebar-select-sm" style="width: 65px; font-size: 11px;">
+          <div style="display: flex; gap: 4px; align-items: flex-start;">
+            <textarea class="event-audio-input sidebar-input query-auto-expand" rows="1" placeholder="Audio for Event ${newIndex + 1}..." style="flex: 1;"></textarea>
+            <select class="event-audio-level sidebar-select-sm" style="width: 65px; font-size: 11px; height: 28px; flex-shrink: 0;">
               <option value="frame" selected>Frame</option>
               <option value="video">Video</option>
             </select>
@@ -325,14 +379,8 @@ function initDynamicInputs() {
     `;
 
     elements.queryInputsContainer.appendChild(div);
+    div.querySelectorAll("textarea.query-auto-expand").forEach(autoResizeTextarea);
     updateRemoveButtons();
-  });
-
-  elements.queryInputsContainer.addEventListener("click", (e) => {
-    if (e.target.classList.contains("remove-query-btn")) {
-      e.target.parentElement.remove();
-      reindexRows();
-    }
   });
 
   // Dynamic Audio Inputs
@@ -346,21 +394,22 @@ function initDynamicInputs() {
       div.style.marginTop = "5px";
 
       div.innerHTML = `
-        <input type="text" name="audio_${newIndex}" class="sidebar-input audio-query-input" placeholder="Spoken words in video..." autocomplete="off">
+        <textarea name="audio_${newIndex}" class="sidebar-input audio-query-input query-auto-expand" rows="1" placeholder="Spoken words in video..." autocomplete="off" style="flex: 1;"></textarea>
         <select name="audio_level_${newIndex}" class="sidebar-select-sm audio-level-select" style="width: 72px; flex-shrink: 0;">
           <option value="frame" selected>Frame</option>
           <option value="video">Video</option>
         </select>
-        <button type="button" class="remove-audio-btn" style="background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer; padding:0 8px;">X</button>
+        <button type="button" class="remove-audio-btn">X</button>
       `;
 
       elements.audioInputsContainer.appendChild(div);
+      div.querySelectorAll("textarea.query-auto-expand").forEach(autoResizeTextarea);
       updateRemoveAudioButtons();
     });
 
     elements.audioInputsContainer.addEventListener("click", (e) => {
       if (e.target.classList.contains("remove-audio-btn")) {
-        e.target.parentElement.remove();
+        e.target.closest(".audio-row")?.remove();
         updateRemoveAudioButtons();
       }
     });
@@ -377,21 +426,22 @@ function initDynamicInputs() {
       div.style.marginTop = "5px";
 
       div.innerHTML = `
-        <input type="text" name="ocr_${newIndex}" class="sidebar-input ocr-query-input" placeholder="Text visible on screen..." autocomplete="off">
+        <textarea name="ocr_${newIndex}" class="sidebar-input ocr-query-input query-auto-expand" rows="1" placeholder="Text visible on screen..." autocomplete="off" style="flex: 1;"></textarea>
         <select name="ocr_level_${newIndex}" class="sidebar-select-sm ocr-level-select" style="width: 72px; flex-shrink: 0;">
           <option value="frame" selected>Frame</option>
           <option value="video">Video</option>
         </select>
-        <button type="button" class="remove-ocr-btn" style="background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer; padding:0 8px;">X</button>
+        <button type="button" class="remove-ocr-btn">X</button>
       `;
 
       elements.ocrInputsContainer.appendChild(div);
+      div.querySelectorAll("textarea.query-auto-expand").forEach(autoResizeTextarea);
       updateRemoveOcrButtons();
     });
 
     elements.ocrInputsContainer.addEventListener("click", (e) => {
       if (e.target.classList.contains("remove-ocr-btn")) {
-        e.target.parentElement.remove();
+        e.target.closest(".ocr-row")?.remove();
         updateRemoveOcrButtons();
       }
     });
@@ -408,21 +458,22 @@ function initDynamicInputs() {
       div.style.marginTop = "5px";
 
       div.innerHTML = `
-        <input type="text" name="text_filter_${newIndex}" class="sidebar-input text-filter-query-input" placeholder="Filter text (e.g. white car)..." autocomplete="off">
+        <textarea name="text_filter_${newIndex}" class="sidebar-input text-filter-query-input query-auto-expand" rows="1" placeholder="Filter text (e.g. white car)..." autocomplete="off" style="flex: 1;"></textarea>
         <select name="text_filter_level_${newIndex}" class="sidebar-select-sm text-filter-level-select" style="width: 72px; flex-shrink: 0;">
           <option value="frame" selected>Frame</option>
           <option value="video">Video</option>
         </select>
-        <button type="button" class="remove-text-filter-btn" style="background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer; padding:0 8px;">X</button>
+        <button type="button" class="remove-text-filter-btn">X</button>
       `;
 
       elements.textFilterInputsContainer.appendChild(div);
+      div.querySelectorAll("textarea.query-auto-expand").forEach(autoResizeTextarea);
       updateRemoveTextFilterButtons();
     });
 
     elements.textFilterInputsContainer.addEventListener("click", (e) => {
       if (e.target.classList.contains("remove-text-filter-btn")) {
-        e.target.parentElement.remove();
+        e.target.closest(".text-filter-row")?.remove();
         updateRemoveTextFilterButtons();
       }
     });

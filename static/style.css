@@ -110,7 +110,7 @@ body {
   color: #8b949e;
 }
 
-/* ─── Inputs ─── */
+/* ─── Inputs & Auto-expanding Textareas ─── */
 .main-query-input,
 .sidebar-input {
   width: 100%;
@@ -122,6 +122,7 @@ body {
   color: #e1e4e8;
   outline: none;
   transition: border-color 0.2s;
+  box-sizing: border-box;
 }
 .main-query-input:focus,
 .sidebar-input:focus {
@@ -130,6 +131,39 @@ body {
 .main-query-input::placeholder,
 .sidebar-input::placeholder {
   color: #484f58;
+}
+
+/* Auto-expanding query textareas for full query display */
+textarea.query-auto-expand {
+  width: 100%;
+  height: auto;
+  min-height: 35px;
+  max-height: 300px;
+  resize: none;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  overflow-y: hidden;
+  word-break: break-word;
+  white-space: pre-wrap;
+  display: block;
+}
+
+textarea.query-auto-expand::placeholder {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  color: #484f58;
+}
+
+textarea.event-ocr-input.query-auto-expand,
+textarea.event-audio-input.query-auto-expand {
+  font-size: 11px;
+  padding: 4px 6px;
+  min-height: 28px;
+  max-height: 160px;
+  line-height: 1.35;
 }
 
 .sidebar-input-sm {
@@ -193,7 +227,12 @@ body {
 .search-row {
   display: flex;
   gap: 6px;
-  align-items: center;
+  align-items: flex-start;
+}
+
+.search-row > .sidebar-select-sm {
+  height: 35px;
+  flex-shrink: 0;
 }
 
 .query-row input[type="radio"] {
@@ -202,13 +241,16 @@ body {
   cursor: pointer;
 }
 
-.remove-query-btn {
+.remove-query-btn,
+.remove-audio-btn,
+.remove-ocr-btn,
+.remove-text-filter-btn {
   background: #da3633;
   color: white;
   border: none;
   border-radius: 4px;
   width: 28px;
-  height: 32px;
+  height: 35px;
   cursor: pointer;
   font-weight: bold;
   font-size: 12px;
@@ -216,8 +258,29 @@ body {
   align-items: center;
   justify-content: center;
   transition: background 0.2s;
+  flex-shrink: 0;
 }
-.remove-query-btn:hover { background: #f85149; }
+.remove-query-btn:hover,
+.remove-audio-btn:hover,
+.remove-ocr-btn:hover,
+.remove-text-filter-btn:hover { background: #f85149; }
+
+.toggle-event-filter-btn {
+  background: #238636;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0 8px;
+  font-size: 12px;
+  cursor: pointer;
+  height: 35px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+.toggle-event-filter-btn:hover { background: #2ea043; }
 
 /* ─── Buttons ─── */
 .btn {

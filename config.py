@@ -64,10 +64,11 @@ EMBEDDING_WEIGHTS    = {k: v["weight"] for k, v in VISION_MODELS.items()}
 
 # Default vision model for interactive search (ultra-fast ~200ms)
 DEFAULT_VISION_MODEL = "SigLIP2"
-HNSW_EF_SEARCH = 128
+HNSW_EF_SEARCH = 64
+
 
 # Which text encoders to load at init
-TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL, "CLIP"]
+TEXT_ENCODERS = ["SigLIP2", CAPTION_MODEL, "CLIP"]
 
 CAPTION_ASPECT_KEYS = [
     "chu_the_hanh_dong",   # Subject & Action

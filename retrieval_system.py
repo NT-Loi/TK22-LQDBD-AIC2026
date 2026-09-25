@@ -532,7 +532,7 @@ class RetrievalSystem:
         encoded_vectors = {}
         valid_models = [m for m in model_names if m in self.text_encoders]
 
-        if len(valid_models) > 1:
+        if len(valid_models) > 1 and getattr(self, "device", "cpu") == "cuda":
             def _enc(m):
                 return m, self._cached_encode(m, query)
             with ThreadPoolExecutor(max_workers=min(len(valid_models), 4)) as executor:
@@ -541,6 +541,7 @@ class RetrievalSystem:
                     m, vec = fut.result()
                     encoded_vectors[m] = vec
         else:
+            # Sequential encoding on CPU avoids heavy OpenMP/MKL thread contention between large models
             for model_name in valid_models:
                 encoded_vectors[model_name] = self._cached_encode(model_name, query)
 
@@ -843,24 +844,34 @@ class RetrievalSystem:
 
         return total_score
 
+    def _get_shot_idx(self, video_id: str, kf: int) -> int:
+        """
+        Return the 0-based shot index containing keyframe kf in video_id, or -1 if not found.
+        """
+        if not hasattr(self, "shots_data") or video_id not in self.shots_data:
+            return -1
+        boundaries = self.shots_data.get(video_id)
+        if not boundaries:
+            return -1
+        starts = getattr(self, "shot_starts", {}).get(video_id)
+        if starts is None:
+            starts = [b[0] for b in boundaries]
+        idx = bisect.bisect_right(starts, kf) - 1
+        if idx >= 0 and kf <= boundaries[idx][1]:
+            return idx
+        return -1
+
     def _is_frame_in_same_shot(self, video_id: str, kf1: int, kf2: int) -> bool:
         """
         Check if two keyframes belong to the same shot in video_id using shot boundary data.
         """
-        if not hasattr(self, "shots_data") or video_id not in self.shots_data:
+        idx1 = self._get_shot_idx(video_id, kf1)
+        if idx1 < 0:
             return False
-        boundaries = self.shots_data[video_id]
-        if not boundaries:
-            return False
-        starts = getattr(self, "shot_starts", {}).get(video_id)
-        if starts is None:
-            starts = [b[0] for b in boundaries]
-        idx1 = bisect.bisect_right(starts, kf1) - 1
-        if idx1 >= 0 and kf1 <= boundaries[idx1][1]:
-            return boundaries[idx1][0] <= kf2 <= boundaries[idx1][1]
-        return False
+        idx2 = self._get_shot_idx(video_id, kf2)
+        return idx1 == idx2
 
-    def _get_text_filter_ranges(self, text_filters, model_names: list = None, top_k: int = 3000) -> dict:
+    def _get_text_filter_ranges(self, text_filters, model_names: list = None, top_k: int = 1000) -> dict:
         """
         Get text filter data for single or multiple visual text queries with per-query level ('frame' or 'video').
         Commutative AND logic: order of queries is non-temporal and has no bearing on chronological sequence.
@@ -910,7 +921,7 @@ class RetrievalSystem:
                     using=primary_model,
                     limit=top_k,
                     search_params=SearchParams(exact=False, hnsw_ef=HNSW_EF_SEARCH),
-                    with_payload=True
+                    with_payload=["video_id", "keyframe_idx", "frame_idx"]
                 ).points
                 return q_item, search_result
             except Exception as e:
@@ -918,7 +929,7 @@ class RetrievalSystem:
                 return q_item, []
 
         query_hits = []
-        if len(parsed_queries) > 1:
+        if len(parsed_queries) > 1 and getattr(self, "device", "cpu") == "cuda":
             with ThreadPoolExecutor(max_workers=min(len(parsed_queries), 4)) as executor:
                 futures = [executor.submit(_fetch_filter, q) for q in parsed_queries]
                 for fut in as_completed(futures):
@@ -926,9 +937,10 @@ class RetrievalSystem:
                     if search_result:
                         query_hits.append((q_item, search_result))
         else:
-            q_item, search_result = _fetch_filter(parsed_queries[0])
-            if search_result:
-                query_hits.append((q_item, search_result))
+            for q in parsed_queries:
+                q_item, search_result = _fetch_filter(q)
+                if search_result:
+                    query_hits.append((q_item, search_result))
 
         for q, search_result in query_hits:
             scores = [hit.score for hit in search_result]
@@ -959,10 +971,24 @@ class RetrievalSystem:
                     "text": q["text"]
                 }
 
+            # Pre-compute sorted keyframes and shot maps for fast O(1)/O(log N) lookup
+            sorted_kfs_map = {}
+            shot_map_per_vid = {}
+            for vid, f_dict in vid_map.items():
+                sorted_kfs_map[vid] = sorted(f_dict.keys())
+                s_map = {}
+                for kf, info in f_dict.items():
+                    s_idx = self._get_shot_idx(vid, kf)
+                    if s_idx >= 0:
+                        s_map[s_idx] = max(s_map.get(s_idx, 0.0), info["score"])
+                shot_map_per_vid[vid] = s_map
+
             query_items.append({
                 "text": q["text"],
                 "level": q["level"],
-                "vid_map": vid_map
+                "vid_map": vid_map,
+                "sorted_kfs": sorted_kfs_map,
+                "shot_map": shot_map_per_vid
             })
 
         if not query_items:
@@ -1012,11 +1038,28 @@ class RetrievalSystem:
                     total_score += frames_dict[keyframe_idx]["score"]
                 else:
                     matched_sc = 0.0
-                    for kf, info in frames_dict.items():
-                        if abs(kf - keyframe_idx) <= 150:  # ~5s frame window
-                            matched_sc = max(matched_sc, info["score"])
-                        elif self._is_frame_in_same_shot(video_id, kf, keyframe_idx):
-                            matched_sc = max(matched_sc, info["score"])
+                    sorted_kfs = q_item.get("sorted_kfs", {}).get(video_id)
+                    if sorted_kfs:
+                        # Fast O(log N) proximity lookup within 150 frames (~5s)
+                        idx_start = bisect.bisect_left(sorted_kfs, keyframe_idx - 150)
+                        while idx_start < len(sorted_kfs) and sorted_kfs[idx_start] <= keyframe_idx + 150:
+                            matched_sc = max(matched_sc, frames_dict[sorted_kfs[idx_start]]["score"])
+                            idx_start += 1
+                    else:
+                        for kf, info in frames_dict.items():
+                            if abs(kf - keyframe_idx) <= 150:  # ~5s frame window
+                                matched_sc = max(matched_sc, info["score"])
+
+                    # Fast O(1) same shot lookup
+                    shot_map = q_item.get("shot_map", {}).get(video_id)
+                    if shot_map:
+                        curr_shot = self._get_shot_idx(video_id, keyframe_idx)
+                        if curr_shot >= 0 and curr_shot in shot_map:
+                            matched_sc = max(matched_sc, shot_map[curr_shot])
+                    elif matched_sc == 0.0:
+                        for kf, info in frames_dict.items():
+                            if self._is_frame_in_same_shot(video_id, kf, keyframe_idx):
+                                matched_sc = max(matched_sc, info["score"])
 
                     if matched_sc > 0.0:
                         total_score += matched_sc
@@ -1550,7 +1593,7 @@ class RetrievalSystem:
                 logger.info("No matches for text_filters in temporal_search. Returning empty results.")
                 return []
         
-        # 1. Search each query with per-event filters concurrently
+        # 1. Search each query with per-event filters (top_k=1000 for fast high-recall retrieval)
         def _search_single_query(q):
             q_text = q["text"]
             q_ocr = q.get("ocr") if q.get("ocr") is not None else ocr_query
@@ -1561,9 +1604,9 @@ class RetrievalSystem:
                 q_text,
                 model_names=model_names,
                 objects=q_objects,
-                top_k=3000,
+                top_k=1000,
                 score_threshold=score_threshold,
-                limit=3000,
+                limit=1000,
                 group_by_shot=False,
                 ocr_query=q_ocr,
                 audio_query=q_audio,
@@ -1571,11 +1614,11 @@ class RetrievalSystem:
                 text_filters=text_filter_ranges
             )
 
-        if len(parsed_queries) > 1:
+        if len(parsed_queries) > 1 and getattr(self, "device", "cpu") == "cuda":
             with ThreadPoolExecutor(max_workers=len(parsed_queries)) as executor:
                 query_results = list(executor.map(_search_single_query, parsed_queries))
         else:
-            query_results = [_search_single_query(parsed_queries[0])]
+            query_results = [_search_single_query(q) for q in parsed_queries]
             
         # 2. Group candidates by video
         video_grouped = {}
@@ -1586,24 +1629,54 @@ class RetrievalSystem:
                     video_grouped[vid] = [[] for _ in range(len(parsed_queries))]
                 video_grouped[vid][q_idx].append(item)
                 
-        # 3. Find valid sequence paths via DFS for each video
+        # 3. Find valid sequence paths via DFS for each video with Temporal Candidate Clustering
         all_sequences_by_video = {}
         
         for vid, vid_group in video_grouped.items():
             # If any query has no results for this video, skip
             if any(len(q_res) == 0 for q_res in vid_group):
                 continue
+
+            # Candidate temporal clustering: pick peak representative frame per shot or proximity window
+            clustered_vid_group = []
             for i in range(len(parsed_queries)):
-                vid_group[i].sort(key=lambda x: x["keyframe_index"])
-            vid_group_to_search = vid_group
+                raw_cands = sorted(vid_group[i], key=lambda x: x["keyframe_index"])
+                clustered = []
+                current_cluster = []
+                for cand in raw_cands:
+                    if not current_cluster:
+                        current_cluster.append(cand)
+                    else:
+                        prev_cand = current_cluster[-1]
+                        same_shot = (
+                            cand.get("shot_start_frame", 0) == prev_cand.get("shot_start_frame", 0) and
+                            cand.get("shot_start_frame", 0) > 0
+                        )
+                        close_dist = abs(cand["keyframe_index"] - prev_cand["keyframe_index"]) <= 75
+                        if same_shot or close_dist:
+                            current_cluster.append(cand)
+                        else:
+                            clustered.append(max(current_cluster, key=lambda x: x["score"]))
+                            current_cluster = [cand]
+                if current_cluster:
+                    clustered.append(max(current_cluster, key=lambda x: x["score"]))
+
+                # Keep top 15 highest-scoring diverse candidates per event query in this video
+                if len(clustered) > 15:
+                    top_k_cands = sorted(clustered, key=lambda x: x["score"], reverse=True)[:15]
+                    clustered = sorted(top_k_cands, key=lambda x: x["keyframe_index"])
+
+                clustered_vid_group.append(clustered)
 
             vid_seqs = []
             def find_paths(current_q_idx, current_path):
+                if len(vid_seqs) >= 50:  # Prune excessive sequence combinatorial explosion per video
+                    return
                 if current_q_idx == len(parsed_queries):
                     vid_seqs.append(list(current_path))
                     return
 
-                for candidate in vid_group_to_search[current_q_idx]:
+                for candidate in clustered_vid_group[current_q_idx]:
                     if len(current_path) == 0:
                         current_path.append(candidate)
                         find_paths(current_q_idx + 1, current_path)
