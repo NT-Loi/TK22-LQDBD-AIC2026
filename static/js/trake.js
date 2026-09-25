@@ -6,7 +6,7 @@ import {
   handleSessionExpired,
   refreshCurrentTask,
   requireDresReady,
-} from "./dres-session.js?v=11";
+} from "./dres-session.js?v=12";
 import {
   bindCopyButton,
   clearDresResult,

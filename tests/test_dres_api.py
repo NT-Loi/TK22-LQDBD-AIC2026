@@ -4,6 +4,7 @@ import httpx
 
 import app as application
 from scripts.mock_dres_server import (
+    EVALUATIONS,
     app as mock_dres_app,
     reset_mock_state,
     set_next_mock_response,
@@ -61,7 +62,29 @@ class DresApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "copy-trake-payload-btn",
         ):
             self.assertIn(f'id="{element_id}"', html)
-        self.assertIn('/static/js/main.js?v=12', html)
+        self.assertIn('/static/js/main.js?v=13', html)
+        self.assertIn('id="refresh-evaluations-btn"', html)
+
+    async def test_refresh_evaluations_fetches_new_active_evaluations(self):
+        added_evaluation = {
+            "id": "mock-new",
+            "name": "MOCK • Evaluation mới",
+            "type": "SYNCHRONOUS",
+            "status": "ACTIVE",
+        }
+        EVALUATIONS.append(added_evaluation)
+        try:
+            response = await self.client.get("/api/dres/evaluations")
+        finally:
+            EVALUATIONS.remove(added_evaluation)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            [evaluation["id"] for evaluation in body["evaluations"]],
+            ["mock-final", "mock-new"],
+        )
+        self.assertEqual(body["selectedEvaluationId"], "mock-final")
 
     async def test_wrong_verdict_is_received_submission_not_transport_error(self):
         set_next_mock_response("WRONG")

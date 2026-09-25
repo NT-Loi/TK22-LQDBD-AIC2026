@@ -583,11 +583,17 @@ async def dres_evaluation_list(request: Request):
         session.evaluations = _active_evaluations(
             await dres_client.list_evaluations(session.dres_session_id)
         )
+        visible_ids = {str(evaluation.get("id")) for evaluation in session.evaluations}
+        if session.selected_evaluation_id not in visible_ids:
+            session.selected_evaluation_id = None
     except DresApiError as error:
         if error.status_code == 401:
             dres_sessions.delete(request.cookies.get(DRES_COOKIE_NAME))
         raise _dres_http_error(error) from error
-    return {"evaluations": session.evaluations}
+    return {
+        "evaluations": session.evaluations,
+        "selectedEvaluationId": session.selected_evaluation_id,
+    }
 
 
 @app.post("/api/dres/evaluation")

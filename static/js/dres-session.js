@@ -2,6 +2,7 @@ import {
   APIError,
   getCurrentTaskAPI,
   getDresSessionAPI,
+  getEvaluationsAPI,
   loginAPI,
   loginDefaultAPI,
   logoutAPI,
@@ -136,6 +137,36 @@ function showEvaluationModal() {
   modal.classList.remove("hidden");
 }
 
+async function refreshEvaluations() {
+  const button = document.getElementById("refresh-evaluations-btn");
+  const originalText = button?.textContent || "Làm mới danh sách";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Đang tải...";
+  }
+
+  try {
+    const data = await getEvaluationsAPI();
+    const previousEvaluationId = state.selectedEvaluationId;
+    state.evaluations = data?.evaluations || [];
+    state.selectedEvaluationId = data?.selectedEvaluationId || null;
+    if (state.selectedEvaluationId !== previousEvaluationId) {
+      state.currentTask = null;
+      state.taskFetchedAt = 0;
+      applyTaskMode(null);
+    }
+    updateConnectionUI();
+    showEvaluationModal();
+  } catch (error) {
+    alert(`Không thể làm mới danh sách evaluation: ${error.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
 function inferMode(task) {
   const taskText = [task?.taskType, task?.taskGroup, task?.name]
     .filter(Boolean)
@@ -232,6 +263,7 @@ export async function initDresSession() {
   const logoutButton = document.getElementById("dres-logout-btn");
   const switchAccountButton = document.getElementById("switch-account-btn");
   const changeEvaluationButton = document.getElementById("change-evaluation-btn");
+  const refreshEvaluationsButton = document.getElementById("refresh-evaluations-btn");
   const refreshTaskButton = document.getElementById("refresh-task-btn");
   const modeSelect = document.getElementById("submission-mode-select");
 
@@ -280,6 +312,7 @@ export async function initDresSession() {
     }
   });
   changeEvaluationButton?.addEventListener("click", showEvaluationModal);
+  refreshEvaluationsButton?.addEventListener("click", refreshEvaluations);
   refreshTaskButton?.addEventListener("click", () => refreshCurrentTask(true));
   modeSelect?.addEventListener("change", () => {
     document.dispatchEvent(new CustomEvent("dres:mode-change", { detail: modeSelect.value }));
