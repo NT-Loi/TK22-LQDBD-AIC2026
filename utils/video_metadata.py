@@ -2,20 +2,20 @@ import os
 import json
 import cv2
 import logging
+from pathlib import Path
+
+try:
+    from config import VIDEO_DIRS
+except ImportError:
+    VIDEO_DIRS = [Path("data/video")]
 
 logger = logging.getLogger(__name__)
 
 METADATA_PATH = "data/video_metadata.json"
-VIDEO_DIR = "data/video"
-
 SUPPORTED_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 
 def generate_video_metadata(force_rescan: bool = False):
-    """Scans the video directory to extract FPS for each video (.mp4, .mov, etc.) and saves it to a JSON file."""
-    if not os.path.exists(VIDEO_DIR):
-        logger.warning(f"Video directory {VIDEO_DIR} does not exist.")
-        return {}
-        
+    """Scans all configured video directories to extract FPS for each video (.mp4, .mov, etc.) and saves it to a JSON file."""
     metadata = {}
     if not force_rescan and os.path.exists(METADATA_PATH):
         try:
@@ -25,17 +25,22 @@ def generate_video_metadata(force_rescan: bool = False):
             logger.warning(f"Failed to read existing {METADATA_PATH}, will rescan all: {e}")
             metadata = {}
 
-    logger.info(f"Scanning videos in {VIDEO_DIR} to generate/update metadata...")
     scanned_count = 0
-    
-    for filename in sorted(os.listdir(VIDEO_DIR)):
-        if filename.lower().endswith(SUPPORTED_VIDEO_EXTS):
-            video_id = os.path.splitext(filename)[0]
-            if video_id in metadata and not force_rescan:
-                continue
+    valid_dirs = [Path(d) for d in VIDEO_DIRS if Path(d).is_dir()]
+    if not valid_dirs:
+        logger.warning(f"No configured video directories found in {VIDEO_DIRS}.")
+        return metadata
 
-            video_path = os.path.join(VIDEO_DIR, filename)
-            scanned_count += 1
+    for vdir in valid_dirs:
+        logger.info(f"Scanning videos in {vdir} to generate/update metadata...")
+        for filename in sorted(os.listdir(vdir)):
+            if filename.lower().endswith(SUPPORTED_VIDEO_EXTS):
+                video_id = os.path.splitext(filename)[0]
+                if video_id in metadata and not force_rescan:
+                    continue
+
+                video_path = os.path.join(vdir, filename)
+                scanned_count += 1
             
             cap = cv2.VideoCapture(video_path)
             if cap.isOpened():

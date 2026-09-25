@@ -111,6 +111,8 @@ class RetrievalSystem:
             for model_name in TEXT_ENCODERS:
                 try:
                     if model_name == "CLIP_H14":
+                        self.text_encoders[model_name] = CLIP_H14TextEncoder(device=self.device)
+                    elif model_name in ("CLIP", "CLIP_B32"):
                         self.text_encoders[model_name] = CLIPTextEncoder(device=self.device)
                     elif model_name == "SigLIP":
                         self.text_encoders[model_name] = SigLIPTextEncoder(device=self.device)
@@ -230,13 +232,18 @@ class RetrievalSystem:
         pass
 
     def ingest_vision_embedding(self, embedding_model: str, max_workers: int = 8):
-        model_embedding_dir = self.vision_embedding_dir / f"{embedding_model}"
-        if not model_embedding_dir.exists() or not model_embedding_dir.is_dir():
-            logger.warning(f"Embedding directory {model_embedding_dir} not found. Skipping {embedding_model}.")
+        model_dirs = [Path(d) / embedding_model for d in EMBEDDING_DIRS if (Path(d) / embedding_model).is_dir()]
+        if not model_dirs:
+            logger.warning(f"Embedding directory for {embedding_model} not found in any EMBEDDING_DIRS. Skipping.")
             return
 
         expected_dim = VISION_EMBEDDING_DIM.get(embedding_model)
-        video_dirs = [d for d in model_embedding_dir.iterdir() if d.is_dir()]
+        video_dirs_map = {}
+        for md in model_dirs:
+            for d in md.iterdir():
+                if d.is_dir() and d.name not in video_dirs_map:
+                    video_dirs_map[d.name] = d
+        video_dirs = sorted(video_dirs_map.values(), key=lambda d: d.name)
 
         def _process_video_dir(video_dir):
             video_id = video_dir.name
@@ -864,7 +871,7 @@ class RetrievalSystem:
         # Select primary vision text encoder
         vision_model_names = [m for m in (model_names or []) if m in self.text_encoders and m in VISION_MODELS]
         if not vision_model_names:
-            vision_model_names = [m for m in ["SigLIP2", "SigLIP", "Qwen3_VL_Embedding", "CLIP_H14"] if m in self.text_encoders]
+            vision_model_names = [m for m in ["SigLIP2", "SigLIP", "Qwen3_VL_Embedding", "CLIP_H14", "CLIP", "FG_CLIP2"] if m in self.text_encoders]
         if not vision_model_names:
             vision_model_names = list(self.text_encoders.keys())
         if not vision_model_names:

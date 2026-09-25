@@ -15,7 +15,14 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from retrieval_system import RetrievalSystem
 from utils.video_metadata import load_video_metadata
-from config import VISION_EMBEDDING_DIM, KEYFRAME_SEARCH_WEIGHT, CAPTION_SEARCH_WEIGHT, DEFAULT_VISION_MODEL
+from config import (
+    VISION_EMBEDDING_DIM,
+    KEYFRAME_SEARCH_WEIGHT,
+    CAPTION_SEARCH_WEIGHT,
+    DEFAULT_VISION_MODEL,
+    VIDEO_DIRS,
+    KEYFRAME_DIRS,
+)
 
 from services.dres_client import DresApiError, DresClient
 from services.dres_session import DresSession, DresSessionStore
@@ -42,19 +49,33 @@ dres_client = DresClient(DRES_BASE_URL, DRES_REQUEST_TIMEOUT_SECONDS)
 dres_sessions = DresSessionStore(ttl_hours=8)
 
 def get_safe_video_path(video_name: str) -> Optional[str]:
-    """Resolves video path securely, matching either exact file or base ID with supported extensions."""
-    video_dir = os.path.abspath("data/video")
-    # Check exact file request
-    direct_path = os.path.abspath(os.path.join(video_dir, video_name))
-    if os.path.commonpath([video_dir, direct_path]) == video_dir and os.path.isfile(direct_path):
-        return direct_path
-
-    # Check without extension or with alternative extensions (.mp4, .mov, etc.)
+    """Resolves video path securely across all configured VIDEO_DIRS, matching exact file or base ID."""
     base_id = os.path.splitext(os.path.basename(video_name))[0]
-    for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV"):
-        cand = os.path.join(video_dir, f"{base_id}{ext}")
-        if os.path.isfile(cand):
-            return cand
+    for vdir in VIDEO_DIRS:
+        vdir_str = str(vdir)
+        if not os.path.isdir(vdir_str):
+            continue
+        vdir_abs = os.path.abspath(vdir_str)
+        direct_path = os.path.abspath(os.path.join(vdir_abs, video_name))
+        if os.path.commonpath([vdir_abs, direct_path]) == vdir_abs and os.path.isfile(direct_path):
+            return direct_path
+
+        for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV"):
+            cand = os.path.join(vdir_abs, f"{base_id}{ext}")
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+def get_safe_keyframe_path(path: str) -> Optional[str]:
+    """Resolves keyframe path across all configured KEYFRAME_DIRS."""
+    for kdir in KEYFRAME_DIRS:
+        kdir_str = str(kdir)
+        if not os.path.isdir(kdir_str):
+            continue
+        kdir_abs = os.path.abspath(kdir_str)
+        full_path = os.path.abspath(os.path.join(kdir_abs, path))
+        if os.path.commonpath([kdir_abs, full_path]) == kdir_abs and os.path.isfile(full_path):
+            return full_path
     return None
 
 @asynccontextmanager
@@ -78,8 +99,16 @@ app.add_middleware(
 )
 
 # Ensure media directories exist to prevent errors
-os.makedirs("data/video", exist_ok=True)
-os.makedirs("data/keyframe", exist_ok=True)
+for vdir in VIDEO_DIRS:
+    try:
+        os.makedirs(str(vdir), exist_ok=True)
+    except OSError:
+        pass
+for kdir in KEYFRAME_DIRS:
+    try:
+        os.makedirs(str(kdir), exist_ok=True)
+    except OSError:
+        pass
 
 # Video serving endpoint supporting both .mp4 and .mov with range requests
 @app.get("/video/{video_name:path}")
@@ -90,9 +119,16 @@ async def serve_video(video_name: str):
     media_type = "video/mp4" if file_path.lower().endswith((".mp4", ".mov")) else None
     return FileResponse(file_path, media_type=media_type)
 
-# Mount static and keyframe directories
+# Keyframe serving endpoint across all configured keyframe directories
+@app.get("/keyframes/{path:path}")
+async def serve_keyframe(path: str):
+    file_path = get_safe_keyframe_path(path)
+    if not file_path:
+        raise HTTPException(status_code=404, detail=f"Keyframe '{path}' not found")
+    return FileResponse(file_path)
+
+# Mount static directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/keyframes", StaticFiles(directory="data/keyframe"), name="keyframes")
 
 templates = Jinja2Templates(directory="templates")
 
