@@ -97,7 +97,7 @@ def ingest(
     shard_index: int = 0,
     shard_count: int = 1,
     extra_embedding_dirs: list[Path] | None = None,
-    skip_keyframe_check: bool = False,
+    require_keyframe: bool = False,
 ) -> dict:
     expected_dim = VISION_EMBEDDING_DIM[model]
     client = QdrantClient(url=QDRANT_HOST_URL, prefer_grpc=True, timeout=180)
@@ -172,7 +172,7 @@ def ingest(
                     except (IndexError, ValueError):
                         totals["invalid"] += 1
                         continue
-                    if not (skip_keyframe_check or _has_keyframe(video_id, frame_idx)):
+                    if require_keyframe and not _has_keyframe(video_id, frame_idx):
                         totals["orphan"] += 1
                         continue
                     items.append((frame_idx, path, _point_id(video_id, frame_idx), None))
@@ -196,7 +196,7 @@ def ingest(
                     for i in range(len(df)):
                         frame_idx = int(df.iloc[i]["frame_idx"])
                         pts_time = float(df.iloc[i]["pts_time"]) if "pts_time" in df.columns and pd.notna(df.iloc[i]["pts_time"]) else None
-                        if not (skip_keyframe_check or _has_keyframe(video_id, frame_idx)):
+                        if require_keyframe and not _has_keyframe(video_id, frame_idx):
                             totals["orphan"] += 1
                             continue
                         vec = arr[i].astype(float).tolist()
@@ -319,9 +319,16 @@ def main() -> None:
         help="Additional root or embedding directory to search (can be specified multiple times).",
     )
     parser.add_argument(
+        "--require-keyframe",
+        action="store_true",
+        default=False,
+        help="Only ingest frames whose keyframe .webp image already exists on disk (default: False, ingest all frames).",
+    )
+    parser.add_argument(
         "--skip-keyframe-check",
         action="store_true",
-        help="Ingest all frames even if keyframe image is not yet on disk.",
+        default=True,
+        help="Deprecated alias for default behavior (ingest all frames).",
     )
     args = parser.parse_args()
     if args.model not in VISION_EMBEDDING_DIM:
@@ -359,7 +366,7 @@ def main() -> None:
             shard_index=args.shard_index,
             shard_count=args.shard_count,
             extra_embedding_dirs=extra_dirs if extra_dirs else None,
-            skip_keyframe_check=args.skip_keyframe_check,
+            require_keyframe=args.require_keyframe,
         )
         print(json.dumps(result, indent=2))
     finally:

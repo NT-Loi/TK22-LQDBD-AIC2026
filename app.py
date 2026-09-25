@@ -127,6 +127,9 @@ async def serve_video(video_name: str):
 async def serve_keyframe(path: str):
     file_path = get_safe_keyframe_path(path)
     if not file_path:
+        placeholder_path = os.path.join("static", "placeholder.png")
+        if os.path.isfile(placeholder_path):
+            return FileResponse(placeholder_path, media_type="image/png")
         raise HTTPException(status_code=404, detail=f"Keyframe '{path}' not found")
     return FileResponse(file_path)
 
