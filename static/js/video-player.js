@@ -2,8 +2,8 @@ import { elements } from "./elements.js";
 import {
   getSubmissionButtonLabel,
   handlePlayerSubmission,
-} from "./submission.js?v=12";
-import { getSubmissionMode } from "./dres-session.js?v=12";
+} from "./submission.js?v=14";
+import { getSubmissionMode } from "./dres-session.js?v=13";
 
 let currentOpenVideoId = null;
 

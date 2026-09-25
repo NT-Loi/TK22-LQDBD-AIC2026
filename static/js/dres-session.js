@@ -153,7 +153,7 @@ async function refreshEvaluations() {
     if (state.selectedEvaluationId !== previousEvaluationId) {
       state.currentTask = null;
       state.taskFetchedAt = 0;
-      applyTaskMode(null);
+      renderTaskLabel(null);
     }
     updateConnectionUI();
     showEvaluationModal();
@@ -167,31 +167,12 @@ async function refreshEvaluations() {
   }
 }
 
-function inferMode(task) {
-  const taskText = [task?.taskType, task?.taskGroup, task?.name]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  if (taskText.includes("trake")) return "trake";
-  if (taskText.includes("q&a") || taskText.includes("question") || /(^|\W)qa(\W|$)/.test(taskText)) {
-    return "qa";
-  }
-  if (taskText.includes("kis")) return "kis";
-  return null;
-}
-
-function applyTaskMode(task) {
-  const mode = inferMode(task);
-  const select = document.getElementById("submission-mode-select");
+function renderTaskLabel(task) {
   const taskLabel = document.getElementById("dres-task-label");
   if (taskLabel) {
     taskLabel.textContent = task
       ? `${task.name || "Task"} • ${task.taskType || "Không rõ loại"}`
       : "Chưa có task hoạt động";
-  }
-  if (mode && select) {
-    select.value = mode;
-    select.dispatchEvent(new Event("change"));
   }
 }
 
@@ -202,7 +183,8 @@ export async function refreshCurrentTask(force = false) {
     const data = await getCurrentTaskAPI(state.selectedEvaluationId);
     state.currentTask = data?.task || null;
     state.taskFetchedAt = Date.now();
-    applyTaskMode(state.currentTask);
+    // currentTask is informational only. The user always controls submission mode.
+    renderTaskLabel(state.currentTask);
     emitState();
     return state.currentTask;
   } catch (error) {
@@ -213,7 +195,7 @@ export async function refreshCurrentTask(force = false) {
     }
     state.currentTask = null;
     state.taskFetchedAt = Date.now();
-    applyTaskMode(null);
+    renderTaskLabel(null);
     return null;
   }
 }

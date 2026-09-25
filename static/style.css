@@ -1363,6 +1363,13 @@ body {
   font-weight: 700;
 }
 
+.trake-open-btn:hover,
+.trake-open-btn.active {
+  color: #ffffff;
+  background: rgba(163, 113, 247, 0.28);
+  border-color: #d2a8ff;
+}
+
 .modal-content {
   position: relative;
   width: min(92vw, 520px);

@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Retrieval - AIC 2026</title>
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=11">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 
@@ -48,7 +48,8 @@
         </div>
         <div class="dres-task-bar">
           <span id="dres-task-label">Chưa kết nối DRES</span>
-          <button id="open-trake-btn" type="button" class="trake-open-btn">
+          <button id="open-trake-btn" type="button" class="trake-open-btn"
+            aria-controls="trake-workspace" aria-expanded="false" title="Mở/đóng TRAKE Workspace">
             TRAKE <span id="trake-count">0</span>
           </button>
         </div>
@@ -404,13 +405,13 @@
   </div>
 
   <!-- TRAKE Workspace -->
-  <aside id="trake-workspace" class="trake-workspace hidden" aria-label="TRAKE Workspace">
+  <aside id="trake-workspace" class="trake-workspace hidden" aria-label="TRAKE Workspace" aria-hidden="true">
     <div class="trake-workspace-header">
       <div>
         <h3>TRAKE Workspace</h3>
         <span id="trake-video-id">Chưa chọn video</span>
       </div>
-      <button id="close-trake-btn" type="button" class="trake-close-btn">&times;</button>
+      <button id="close-trake-btn" type="button" class="trake-close-btn" aria-label="Đóng TRAKE Workspace">&times;</button>
     </div>
     <p id="trake-status" class="trake-status" role="status">Chưa có semantic keyframe nào.</p>
     <div id="trake-frame-list" class="trake-frame-list"></div>
@@ -431,7 +432,7 @@
     </div>
   </aside>
 
-  <script type="module" src="/static/js/main.js?v=13"></script>
+  <script type="module" src="/static/js/main.js?v=15"></script>
 </body>
 
 </html>

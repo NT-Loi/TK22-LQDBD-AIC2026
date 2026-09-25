@@ -6,8 +6,8 @@ import {
   handleSessionExpired,
   refreshCurrentTask,
   requireDresReady,
-} from "./dres-session.js?v=12";
-import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=12";
+} from "./dres-session.js?v=13";
+import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=14";
 import {
   bindCopyButton,
   clearDresResult,
@@ -167,10 +167,6 @@ async function confirmSubmission() {
   try {
     await refreshCurrentTask(true);
     if (!requireDresReady()) return;
-    const refreshedMode = getSubmissionMode();
-    if (refreshedMode !== mode) {
-      throw new Error(`Task DRES đã chuyển sang ${refreshedMode.toUpperCase()}. Vui lòng kiểm tra lại trước khi nộp.`);
-    }
     const dres = getDresState();
     const result = await submitResultAPI({
       evaluationId: dres.selectedEvaluationId,
