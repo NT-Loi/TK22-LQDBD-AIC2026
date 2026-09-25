@@ -70,24 +70,6 @@ def _has_keyframe(video_id: str, frame_idx: int) -> bool:
     return False
 
 
-def _has_video(video_id: str) -> bool:
-    cand_stems = [video_id]
-    if "_" in video_id:
-        cand_stems.append(video_id.replace("_", "-"))
-    if "-" in video_id:
-        cand_stems.append(video_id.replace("-", "_"))
-
-    for vdir in VIDEO_DIRS:
-        vdir_path = Path(vdir)
-        if not vdir_path.is_dir():
-            continue
-        for stem in cand_stems:
-            for ext in (".mp4", ".mov", ".MP4", ".MOV"):
-                if (vdir_path / f"{stem}{ext}").is_file():
-                    return True
-    return False
-
-
 def _find_map_csv(video_id: str, map_dirs: list[Path]) -> Path | None:
     cand_stems = [video_id]
     if "_" in video_id:
@@ -190,7 +172,7 @@ def ingest(
                     except (IndexError, ValueError):
                         totals["invalid"] += 1
                         continue
-                    if not (skip_keyframe_check or _has_keyframe(video_id, frame_idx) or _has_video(video_id)):
+                    if not (skip_keyframe_check or _has_keyframe(video_id, frame_idx)):
                         totals["orphan"] += 1
                         continue
                     items.append((frame_idx, path, _point_id(video_id, frame_idx), None))
@@ -211,11 +193,10 @@ def ingest(
                         totals["invalid"] += 1
                         continue
 
-                    has_video = _has_video(video_id)
                     for i in range(len(df)):
                         frame_idx = int(df.iloc[i]["frame_idx"])
                         pts_time = float(df.iloc[i]["pts_time"]) if "pts_time" in df.columns and pd.notna(df.iloc[i]["pts_time"]) else None
-                        if not (skip_keyframe_check or has_video or _has_keyframe(video_id, frame_idx)):
+                        if not (skip_keyframe_check or _has_keyframe(video_id, frame_idx)):
                             totals["orphan"] += 1
                             continue
                         vec = arr[i].astype(float).tolist()

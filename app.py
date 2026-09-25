@@ -127,28 +127,6 @@ async def serve_video(video_name: str):
 async def serve_keyframe(path: str):
     file_path = get_safe_keyframe_path(path)
     if not file_path:
-        # Fallback: attempt on-demand frame extraction from source video if path is {video_id}/keyframe_{frame_idx}.webp
-        try:
-            parts = path.strip("/").split("/")
-            if len(parts) == 2 and parts[1].startswith("keyframe_") and parts[1].endswith(".webp"):
-                video_id = parts[0]
-                frame_idx = int(parts[1][len("keyframe_"):-len(".webp")])
-                video_file = get_safe_video_path(f"{video_id}.mp4")
-                if video_file:
-                    import cv2
-                    cap = cv2.VideoCapture(video_file)
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                    ret, frame = cap.read()
-                    cap.release()
-                    if ret and frame is not None:
-                        save_dir = Path(DATA_DIR) / "keyframe" / video_id
-                        save_dir.mkdir(parents=True, exist_ok=True)
-                        save_path = save_dir / f"keyframe_{frame_idx}.webp"
-                        cv2.imwrite(str(save_path), frame, [cv2.IMWRITE_WEBP_QUALITY, 80])
-                        return FileResponse(str(save_path))
-        except Exception as e:
-            logger.debug(f"On-demand keyframe extraction failed for {path}: {e}")
-
         raise HTTPException(status_code=404, detail=f"Keyframe '{path}' not found")
     return FileResponse(file_path)
 
