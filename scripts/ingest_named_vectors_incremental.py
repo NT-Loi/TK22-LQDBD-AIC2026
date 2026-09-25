@@ -3,20 +3,34 @@
 Unlike ``RetrievalSystem.ingest_vision_embedding``, this utility preserves the other
 named vectors already stored on a point. Existing points are updated with
 ``update_vectors``; missing points are inserted with ``upsert``.
+
+Supports both:
+- Directory of per-frame PyTorch tensors: ``<model>/<video_id>/keyframe_<idx>.pt``
+- Consolidated NumPy arrays with CSV maps: ``<model>/<video_id>.npy`` + ``maps/<video_id>.csv``
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import torch
 from qdrant_client import QdrantClient
-from qdrant_client.models import OptimizersConfigDiff, PointStruct, PointVectors
+from qdrant_client.models import (
+    DenseVectorConfig,
+    DenseVectorNameConfig,
+    Distance,
+    OptimizersConfigDiff,
+    PointStruct,
+    PointVectors,
+)
 from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -27,10 +41,14 @@ from config import (
     DATA_DIR,
     EMBEDDING_DIRS,
     KEYFRAME_DIRS,
+    MAP_DIRS,
+    VIDEO_DIRS,
     QDRANT_COLLECTION_NAME,
     QDRANT_HOST_URL,
     VISION_EMBEDDING_DIM,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _point_id(video_id: str, frame_idx: int) -> str:
@@ -52,6 +70,42 @@ def _has_keyframe(video_id: str, frame_idx: int) -> bool:
     return False
 
 
+def _has_video(video_id: str) -> bool:
+    cand_stems = [video_id]
+    if "_" in video_id:
+        cand_stems.append(video_id.replace("_", "-"))
+    if "-" in video_id:
+        cand_stems.append(video_id.replace("-", "_"))
+
+    for vdir in VIDEO_DIRS:
+        vdir_path = Path(vdir)
+        if not vdir_path.is_dir():
+            continue
+        for stem in cand_stems:
+            for ext in (".mp4", ".mov", ".MP4", ".MOV"):
+                if (vdir_path / f"{stem}{ext}").is_file():
+                    return True
+    return False
+
+
+def _find_map_csv(video_id: str, map_dirs: list[Path]) -> Path | None:
+    cand_stems = [video_id]
+    if "_" in video_id:
+        cand_stems.append(video_id.replace("_", "-"))
+    if "-" in video_id:
+        cand_stems.append(video_id.replace("-", "_"))
+
+    for mdir in map_dirs:
+        mdir_path = Path(mdir)
+        if not mdir_path.is_dir():
+            continue
+        for stem in cand_stems:
+            p = mdir_path / f"{stem}.csv"
+            if p.is_file():
+                return p
+    return None
+
+
 def ingest(
     model: str,
     batch_size: int,
@@ -61,12 +115,30 @@ def ingest(
     shard_index: int = 0,
     shard_count: int = 1,
     extra_embedding_dirs: list[Path] | None = None,
+    skip_keyframe_check: bool = False,
 ) -> dict:
     expected_dim = VISION_EMBEDDING_DIM[model]
     client = QdrantClient(url=QDRANT_HOST_URL, prefer_grpc=True, timeout=180)
 
+    # 1. Ensure the named vector exists on the Qdrant collection schema
+    try:
+        coll = client.get_collection(QDRANT_COLLECTION_NAME)
+        existing_vectors = coll.config.params.vectors or {}
+        if model not in existing_vectors:
+            print(f"Creating named vector '{model}' (dim={expected_dim}) in collection '{QDRANT_COLLECTION_NAME}'...")
+            client.create_vector_name(
+                collection_name=QDRANT_COLLECTION_NAME,
+                vector_name=model,
+                vector_name_config=DenseVectorNameConfig(
+                    dense=DenseVectorConfig(size=expected_dim, distance=Distance.COSINE)
+                ),
+                wait=True,
+            )
+    except Exception as e:
+        print(f"Warning: unable to verify/create vector '{model}' in collection: {e}")
+
     completed = set()
-    if checkpoint.exists():
+    if checkpoint is not None and checkpoint.exists():
         try:
             completed = set(json.loads(checkpoint.read_text(encoding="utf-8")).get("completed", []))
         except Exception:
@@ -74,53 +146,90 @@ def ingest(
 
     totals = {"already_present": 0, "updated": 0, "inserted": 0, "orphan": 0, "invalid": 0}
 
-    # Discover video directories across all configured EMBEDDING_DIRS
+    # 2. Discover video sources across all configured EMBEDDING_DIRS
     search_dirs = list(EMBEDDING_DIRS)
     if extra_embedding_dirs:
         for ed in extra_embedding_dirs:
             if ed not in search_dirs:
                 search_dirs.append(ed)
 
-    video_dirs_map: dict[str, Path] = {}
+    video_sources_map: dict[str, Path] = {}
     for emb_dir in search_dirs:
         m_dir = Path(emb_dir) / model
         if not m_dir.is_dir():
             continue
         for path in m_dir.iterdir():
-            if path.is_dir() and path.name not in video_dirs_map:
-                video_dirs_map[path.name] = path
+            if path.is_dir() and path.name not in video_sources_map:
+                video_sources_map[path.name] = path
+            elif path.is_file() and path.suffix == ".npy" and path.stem not in video_sources_map:
+                video_sources_map[path.stem] = path
 
-    video_dirs = sorted(video_dirs_map.values(), key=lambda p: p.name)
-    video_dirs = video_dirs[shard_index::shard_count]
+    video_sources = sorted(video_sources_map.items(), key=lambda item: item[0])
+    video_sources = video_sources[shard_index::shard_count]
 
-    to_process = [vd for vd in video_dirs if vd.name not in completed]
-    num_cached = len(video_dirs) - len(to_process)
+    to_process = [(vid, path) for vid, path in video_sources if vid not in completed]
+    num_cached = len(video_sources) - len(to_process)
 
     if num_cached > 0 and to_process:
-        print(f"⏩ Resuming from checkpoint: {num_cached}/{len(video_dirs)} videos already cached. Processing remaining {len(to_process)} videos...")
+        print(f"⏩ Resuming from checkpoint: {num_cached}/{len(video_sources)} videos already cached. Processing remaining {len(to_process)} videos...")
 
     with ThreadPoolExecutor(max_workers=loader_workers) as pool:
-        for video_dir in tqdm(
+        for video_id, video_path in tqdm(
             to_process,
             desc=f"Ingest {model}",
             unit="video",
-            total=len(video_dirs),
+            total=len(video_sources),
             initial=num_cached,
         ):
-            video_id = video_dir.name
+            items = []  # tuple of (frame_idx, vec_or_path, pid, pts_time)
 
-            items = []
-            for path in video_dir.glob("keyframe_*.pt"):
-                try:
-                    frame_idx = int(path.stem.split("_", 1)[1])
-                except (IndexError, ValueError):
+            if video_path.is_dir():
+                for path in video_path.glob("keyframe_*.pt"):
+                    try:
+                        frame_idx = int(path.stem.split("_", 1)[1])
+                    except (IndexError, ValueError):
+                        totals["invalid"] += 1
+                        continue
+                    if not (skip_keyframe_check or _has_keyframe(video_id, frame_idx) or _has_video(video_id)):
+                        totals["orphan"] += 1
+                        continue
+                    items.append((frame_idx, path, _point_id(video_id, frame_idx), None))
+                items.sort(key=lambda item: item[0])
+
+            elif video_path.is_file() and video_path.suffix == ".npy":
+                map_csv = _find_map_csv(video_id, MAP_DIRS)
+                if not map_csv:
                     totals["invalid"] += 1
                     continue
-                if not _has_keyframe(video_id, frame_idx):
-                    totals["orphan"] += 1
+                try:
+                    df = pd.read_csv(map_csv)
+                    if "frame_idx" not in df.columns:
+                        totals["invalid"] += 1
+                        continue
+                    arr = np.load(video_path)
+                    if len(arr) != len(df):
+                        totals["invalid"] += 1
+                        continue
+
+                    has_video = _has_video(video_id)
+                    for i in range(len(df)):
+                        frame_idx = int(df.iloc[i]["frame_idx"])
+                        pts_time = float(df.iloc[i]["pts_time"]) if "pts_time" in df.columns and pd.notna(df.iloc[i]["pts_time"]) else None
+                        if not (skip_keyframe_check or has_video or _has_keyframe(video_id, frame_idx)):
+                            totals["orphan"] += 1
+                            continue
+                        vec = arr[i].astype(float).tolist()
+                        if len(vec) != expected_dim:
+                            totals["invalid"] += 1
+                            continue
+                        items.append((frame_idx, vec, _point_id(video_id, frame_idx), pts_time))
+                except Exception:
+                    totals["invalid"] += 1
                     continue
-                items.append((frame_idx, path, _point_id(video_id, frame_idx)))
-            items.sort(key=lambda item: item[0])
+
+            if not items:
+                completed.add(video_id)
+                continue
 
             for start in range(0, len(items), batch_size):
                 batch = items[start : start + batch_size]
@@ -145,18 +254,25 @@ def ingest(
                 if not needed:
                     continue
 
-                loaded = list(pool.map(lambda item: _load_vector(item[1], expected_dim), needed))
+                if video_path.is_dir():
+                    loaded_vectors = list(pool.map(lambda it: _load_vector(it[1], expected_dim), needed))
+                else:
+                    loaded_vectors = [it[1] for it in needed]
+
                 updates = []
                 inserts = []
-                for (frame_idx, _path, pid), vector in zip(needed, loaded):
+                for (frame_idx, _vec_or_path, pid, pts_time), vector in zip(needed, loaded_vectors):
                     if pid in records_by_id:
                         updates.append(PointVectors(id=pid, vector={model: vector}))
                     else:
+                        payload = {"video_id": video_id, "keyframe_idx": frame_idx}
+                        if pts_time is not None:
+                            payload["pts_time"] = pts_time
                         inserts.append(
                             PointStruct(
                                 id=pid,
                                 vector={model: vector},
-                                payload={"video_id": video_id, "keyframe_idx": frame_idx},
+                                payload=payload,
                             )
                         )
 
@@ -176,11 +292,12 @@ def ingest(
                     totals["inserted"] += len(inserts)
 
             completed.add(video_id)
-            checkpoint.parent.mkdir(parents=True, exist_ok=True)
-            checkpoint.write_text(
-                json.dumps({"completed": sorted(completed), "totals": totals}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            if checkpoint is not None:
+                checkpoint.parent.mkdir(parents=True, exist_ok=True)
+                checkpoint.write_text(
+                    json.dumps({"completed": sorted(completed), "totals": totals}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
 
     return totals
 
@@ -220,6 +337,11 @@ def main() -> None:
         default=None,
         help="Additional root or embedding directory to search (can be specified multiple times).",
     )
+    parser.add_argument(
+        "--skip-keyframe-check",
+        action="store_true",
+        help="Ingest all frames even if keyframe image is not yet on disk.",
+    )
     args = parser.parse_args()
     if args.model not in VISION_EMBEDDING_DIM:
         parser.error(f"Unknown model: {args.model}")
@@ -251,11 +373,12 @@ def main() -> None:
             args.model,
             args.batch_size,
             args.loader_workers,
-            checkpoint=checkpoint_path if not args.no_checkpoint else Path("/dev/null/dummy"),
+            checkpoint=checkpoint_path if not args.no_checkpoint else None,
             wait=not args.async_writes,
             shard_index=args.shard_index,
             shard_count=args.shard_count,
             extra_embedding_dirs=extra_dirs if extra_dirs else None,
+            skip_keyframe_check=args.skip_keyframe_check,
         )
         print(json.dumps(result, indent=2))
     finally:

@@ -27,6 +27,7 @@ from config import (
 from services.dres_client import DresApiError, DresClient
 from services.dres_session import DresSession, DresSessionStore
 from services.dres_submission import build_dres_submission_payload
+from utils.pts_mapper import annotate_result_item, get_video_time_ms
 
 load_dotenv()
 system = None
@@ -60,10 +61,12 @@ def get_safe_video_path(video_name: str) -> Optional[str]:
         if os.path.commonpath([vdir_abs, direct_path]) == vdir_abs and os.path.isfile(direct_path):
             return direct_path
 
-        for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV"):
-            cand = os.path.join(vdir_abs, f"{base_id}{ext}")
-            if os.path.isfile(cand):
-                return cand
+        cand_stems = [base_id, base_id.replace("_", "-"), base_id.replace("-", "_")]
+        for stem in cand_stems:
+            for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV", ".mov", ".mp4"):
+                cand = os.path.join(vdir_abs, f"{stem}{ext}")
+                if os.path.isfile(cand):
+                    return cand
     return None
 
 def get_safe_keyframe_path(path: str) -> Optional[str]:
@@ -124,6 +127,28 @@ async def serve_video(video_name: str):
 async def serve_keyframe(path: str):
     file_path = get_safe_keyframe_path(path)
     if not file_path:
+        # Fallback: attempt on-demand frame extraction from source video if path is {video_id}/keyframe_{frame_idx}.webp
+        try:
+            parts = path.strip("/").split("/")
+            if len(parts) == 2 and parts[1].startswith("keyframe_") and parts[1].endswith(".webp"):
+                video_id = parts[0]
+                frame_idx = int(parts[1][len("keyframe_"):-len(".webp")])
+                video_file = get_safe_video_path(f"{video_id}.mp4")
+                if video_file:
+                    import cv2
+                    cap = cv2.VideoCapture(video_file)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    cap.release()
+                    if ret and frame is not None:
+                        save_dir = Path(DATA_DIR) / "keyframe" / video_id
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                        save_path = save_dir / f"keyframe_{frame_idx}.webp"
+                        cv2.imwrite(str(save_path), frame, [cv2.IMWRITE_WEBP_QUALITY, 80])
+                        return FileResponse(str(save_path))
+        except Exception as e:
+            logger.debug(f"On-demand keyframe extraction failed for {path}: {e}")
+
         raise HTTPException(status_code=404, detail=f"Keyframe '{path}' not found")
     return FileResponse(file_path)
 
@@ -320,20 +345,13 @@ async def search(query: SearchQuery):
             limit=query.limit
         )
     
-    # Map results and add accurate FPS for the frontend
+    # Map results and add accurate FPS and timeMs for the frontend
     for item in results:
         vid = item.get("video_id")
         fps = 25.0
         if vid and vid in video_metadata and "fps" in video_metadata[vid]:
             fps = video_metadata[vid]["fps"]
-            
-        item["fps"] = fps
-        if "frames" in item:
-            for frame in item["frames"]:
-                frame["fps"] = fps
-        if "display_frames" in item:
-            for frame in item["display_frames"]:
-                frame["fps"] = fps
+        annotate_result_item(item, default_fps=fps)
             
     return results
 
@@ -349,13 +367,13 @@ async def ocr_search(query: OCRSearchQuery):
     
     results = system.ocr_search(query.query, fuzziness=query.fuzziness, size=query.limit)
     
-    # Add FPS metadata
+    # Add FPS and accurate timeMs metadata
     for item in results:
         vid = item.get("video_id")
         fps = 25.0
         if vid and vid in video_metadata and "fps" in video_metadata[vid]:
             fps = video_metadata[vid]["fps"]
-        item["fps"] = fps
+        annotate_result_item(item, default_fps=fps)
     
     return results
 
@@ -396,7 +414,8 @@ async def get_video_keyframes(video_id: str):
                     keyframes.append({
                         "video_id": vid,
                         "keyframe_index": idx,
-                        "fps": fps
+                        "fps": fps,
+                        "timeMs": get_video_time_ms(vid, idx, fps)
                     })
                 except ValueError:
                     pass
@@ -430,7 +449,8 @@ async def get_shot_keyframes(video_id: str, start_frame: int = 0, end_frame: int
                         keyframes.append({
                             "video_id": vid,
                             "keyframe_index": idx,
-                            "fps": fps
+                            "fps": fps,
+                            "timeMs": get_video_time_ms(vid, idx, fps)
                         })
                 except ValueError:
                     pass

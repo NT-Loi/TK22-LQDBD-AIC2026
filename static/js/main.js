@@ -5,7 +5,7 @@ import { initDresSession } from "./dres-session.js?v=13";
 import { initSubmissionUI } from "./submission.js?v=14";
 import { initTrakeWorkspace } from "./trake.js?v=14";
 import { displayResults } from "./results.js?v=12";
-import { initVideoModal, openDirectVideo } from "./video-player.js?v=12";
+import { initVideoModal, openDirectVideo } from "./video-player.js?v=16";
 import { initCatalogTab } from "./catalog.js";
 
 let currentResults = [];

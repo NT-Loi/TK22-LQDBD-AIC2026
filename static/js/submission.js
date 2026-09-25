@@ -118,6 +118,11 @@ function openSubmissionModal(item) {
 
 export function handleSubmissionCandidate(event, item) {
   event?.stopPropagation();
+  const vid = String(item?.videoId || item?.video_id || "").trim();
+  if (vid.startsWith("N") && getSubmissionMode() === "trake") {
+    alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+    return;
+  }
   try {
     openSubmissionModal(item);
   } catch (error) {
@@ -127,6 +132,11 @@ export function handleSubmissionCandidate(event, item) {
 
 export function handleSequenceSubmission(event, frames) {
   event?.stopPropagation();
+  const firstVid = String(frames?.[0]?.videoId || frames?.[0]?.video_id || "").trim();
+  if (firstVid.startsWith("N") && getSubmissionMode() === "trake") {
+    alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+    return;
+  }
   if (getSubmissionMode() === "trake") {
     try {
       loadTrakeSequence(frames);

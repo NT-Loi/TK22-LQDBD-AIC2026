@@ -30,6 +30,12 @@ EMBEDDING_DIRS = [
     *[Path(extra) / "embedding" for extra in EXTRA_DATA_DIRS if (Path(extra) / "embedding").is_dir()],
 ]
 
+# All maps source directories
+MAP_DIRS = [
+    Path(DATA_DIR) / "maps",
+    *[Path(extra) / "maps" for extra in EXTRA_DATA_DIRS if (Path(extra) / "maps").is_dir()],
+]
+
 
 QDRANT_HOST_URL = "http://localhost:6333"
 QDRANT_COLLECTION_NAME = "video_frames"
@@ -61,7 +67,7 @@ DEFAULT_VISION_MODEL = "SigLIP2"
 HNSW_EF_SEARCH = 128
 
 # Which text encoders to load at init
-TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL]
+TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL, "CLIP"]
 
 CAPTION_ASPECT_KEYS = [
     "chu_the_hanh_dong",   # Subject & Action

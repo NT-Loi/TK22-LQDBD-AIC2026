@@ -25,7 +25,7 @@ from tqdm import tqdm
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams, QueryRequest
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchAny, Range, SetPayloadOperation, SetPayload, SearchParams, QueryRequest, DenseVectorConfig, DenseVectorNameConfig, Distance
 from elasticsearch import Elasticsearch
 
 from data_processor.text_encoder import *
@@ -90,6 +90,23 @@ class RetrievalSystem:
         
         if not self.qdrant_client.collection_exists(QDRANT_COLLECTION_NAME):
             logger.warning(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' does not exist. Please run ingestion.")
+        else:
+            try:
+                coll_info = self.qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+                existing_vectors = coll_info.config.params.vectors or {}
+                for m_name, m_cfg in self.vision_models.items():
+                    if m_name not in existing_vectors:
+                        logger.info(f"Adding missing named vector '{m_name}' (dim={m_cfg['dim']}) to Qdrant collection '{QDRANT_COLLECTION_NAME}'...")
+                        self.qdrant_client.create_vector_name(
+                            collection_name=QDRANT_COLLECTION_NAME,
+                            vector_name=m_name,
+                            vector_name_config=DenseVectorNameConfig(
+                                dense=DenseVectorConfig(size=m_cfg["dim"], distance=Distance.COSINE)
+                            ),
+                            wait=True,
+                        )
+            except Exception as e:
+                logger.warning(f"Could not verify/create collection vector names: {e}")
 
         if not self.qdrant_client.collection_exists(QDRANT_SHOT_CAPTION_COLLECTION_NAME):
             logger.warning(f"Qdrant collection '{QDRANT_SHOT_CAPTION_COLLECTION_NAME}' does not exist. Please run ingestion.")
