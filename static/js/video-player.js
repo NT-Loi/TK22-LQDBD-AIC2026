@@ -3,8 +3,45 @@ import {
   getSubmissionButtonLabel,
   handlePlayerSubmission,
 } from "./submission.js?v=12";
+import { getSubmissionMode } from "./dres-session.js?v=12";
 
 let currentOpenVideoId = null;
+
+// Chỉ chờ khi video vừa được tua tới frame mới; giới hạn thời gian chờ.
+function waitForSeek(video) {
+  if (!video.seeking) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      video.removeEventListener("seeked", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, 300);
+    video.addEventListener("seeked", finish, { once: true });
+  });
+}
+
+// Chụp chính khung hình đã giải mã trong player, không tải/giải mã video lần hai.
+function captureSmallPreview(video) {
+  if (video.seeking || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+    return null;
+  }
+
+  const scale = Math.min(1, 320 / video.videoWidth);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+
+  try {
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.7);
+  } catch {
+    // Không để lỗi tạo ảnh cản việc thêm mốc TRAKE.
+    return null;
+  }
+}
+
 
 let modalSidebarSortMode = "time";
 
@@ -252,7 +289,7 @@ export function openModal(
           previewCtx.drawImage(previewVideo, 0, 0, vw, vh);
           previewImg.src = previewCanvas.toDataURL("image/jpeg", 0.5);
           previewImg.style.display = "block";
-        } catch (e) {}
+        } catch (e) { }
       }
     };
     previewVideo.addEventListener("seeked", onSeeked, { once: true });
@@ -361,13 +398,28 @@ export function openModal(
   });
 
   // Submit Logic (Pause Video)
-  dynSubmitBtn.addEventListener("click", () => {
-    elements.modalVideoPlayer.pause(); // PAUSE
-    handlePlayerSubmission({
-      videoId,
-      currentTime: elements.modalVideoPlayer.currentTime,
-      fps: frameRate,
-    });
+  dynSubmitBtn.addEventListener("click", async () => {
+    if (dynSubmitBtn.disabled) return;
+    dynSubmitBtn.disabled = true;
+
+    try {
+      const video = elements.modalVideoPlayer;
+      video.pause(); // Giữ hành vi hiện tại khi chọn frame.
+      const selectedTime = video.currentTime;
+      let previewUrl = null;
+
+      if (getSubmissionMode() === "trake") {
+        await waitForSeek(video);
+        // Không gắn ảnh của một frame khác nếu người dùng tua tiếp khi đang chờ.
+        if (Math.abs(video.currentTime - selectedTime) <= 1 / frameRate) {
+          previewUrl = captureSmallPreview(video);
+        }
+      }
+
+      handlePlayerSubmission({ videoId, currentTime: selectedTime, fps: frameRate, previewUrl });
+    } finally {
+      dynSubmitBtn.disabled = false;
+    }
   });
 
   // Nav Logic
@@ -509,11 +561,10 @@ function renderCaptionSidebar(captionItem, shotKeyframes, fps, specificKeyframe)
     tabBtn.textContent = tab.label;
     tabBtn.dataset.tab = tab.id;
     const isActive = captionSidebarActiveTab === tab.id;
-    tabBtn.style.cssText = `flex: 1; padding: 8px 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s; ${
-      isActive
-        ? "background: #21262d; color: #58a6ff; border-bottom: 2px solid #58a6ff;"
-        : "background: #161b22; color: #8b949e; border-bottom: 2px solid transparent;"
-    }`;
+    tabBtn.style.cssText = `flex: 1; padding: 8px 4px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.2s; ${isActive
+      ? "background: #21262d; color: #58a6ff; border-bottom: 2px solid #58a6ff;"
+      : "background: #161b22; color: #8b949e; border-bottom: 2px solid transparent;"
+      }`;
     tabBtn.addEventListener("click", () => {
       captionSidebarActiveTab = tab.id;
       renderCaptionSidebar(captionItem, shotKeyframes, fps, specificKeyframe);

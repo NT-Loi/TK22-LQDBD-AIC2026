@@ -3,6 +3,7 @@ const VERDICT_PRESENTATION = {
   WRONG: { label: "SAI", kind: "wrong" },
   INDETERMINATE: { label: "CHƯA XÁC ĐỊNH", kind: "indeterminate" },
   UNDECIDABLE: { label: "KHÔNG THỂ CHẤM", kind: "undecidable" },
+  PARTIALLY_CORRECT: { label: "ĐÚNG MỘT PHẦN", kind: "indeterminate" },
 };
 
 function addRow(container, label, value) {

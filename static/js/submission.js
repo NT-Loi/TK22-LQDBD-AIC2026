@@ -31,7 +31,15 @@ function normalizeCandidate(item) {
   if (!videoId || !Number.isInteger(frameId) || frameId < 0 || timeMs < 0) {
     throw new Error("Không xác định được video/frame cần nộp.");
   }
-  return { videoId, frameId, fps, timeMs, source: item.source || "result" };
+  return {
+    videoId,
+    frameId,
+    fps,
+    timeMs,
+    source: item.source || "result",
+    previewUrl: typeof item.previewUrl === "string" ? item.previewUrl : null,
+
+  };
 }
 
 function dresPreview(mode, answer = "") {
@@ -130,7 +138,7 @@ export function handleSequenceSubmission(event, frames) {
   if (frames?.length) handleSubmissionCandidate(event, frames[0]);
 }
 
-export function handlePlayerSubmission({ videoId, currentTime, fps }) {
+export function handlePlayerSubmission({ videoId, currentTime, fps, previewUrl = null }) {
   const frameId = Math.round(currentTime * fps);
   openSubmissionModal({
     videoId,
@@ -138,6 +146,7 @@ export function handlePlayerSubmission({ videoId, currentTime, fps }) {
     fps,
     timeMs: Math.round(currentTime * 1000),
     source: "player",
+    previewUrl,
   });
 }
 

@@ -9,7 +9,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 
-DRES_VERDICTS = frozenset({"CORRECT", "WRONG", "INDETERMINATE", "UNDECIDABLE"})
+DRES_VERDICTS = frozenset({"CORRECT", "WRONG", "INDETERMINATE", "UNDECIDABLE", "PARTIALLY_CORRECT"})
 
 
 @dataclass(slots=True)
@@ -144,7 +144,8 @@ class DresClient:
             response.status_code,
             self._response_body(response),
         )
-
+       
+        
     def masked_submission_url(self, evaluation_id: str) -> str:
         encoded_evaluation = quote(evaluation_id, safe="")
         return (

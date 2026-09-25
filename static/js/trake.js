@@ -31,7 +31,13 @@ function normalizeCandidate(candidate) {
   if (!videoId || !Number.isInteger(frameId) || frameId < 0) {
     throw new Error("Mốc TRAKE không hợp lệ.");
   }
-  return { videoId, frameId, fps, timeMs: Math.round((frameId / fps) * 1000) };
+  return {
+    videoId,
+    frameId,
+    fps,
+    timeMs: Math.round((frameId / fps) * 1000),
+    previewUrl: typeof candidate.previewUrl === "string" ? candidate.previewUrl : null,
+  };
 }
 
 function isStrictlyIncreasing() {
@@ -64,8 +70,19 @@ function render() {
     const row = document.createElement("div");
     row.className = "trake-frame-row";
     const image = document.createElement("img");
-    image.src = `/keyframes/${encodeURIComponent(item.videoId)}/keyframe_${item.frameId}.webp`;
     image.alt = `Event ${index + 1}, frame ${item.frameId}`;
+    // Ưu tiên keyframe đã có. Nếu 404, dùng ảnh vừa chụp từ player.
+    let fallbackStep = 0;
+    image.onerror = () => {
+      if (fallbackStep === 0 && item.previewUrl) {
+        fallbackStep = 1;
+        image.src = item.previewUrl;
+        return;
+      }
+      image.onerror = null;
+      image.src = "/static/placeholder.png";
+    };
+    image.src = `/keyframes/${encodeURIComponent(item.videoId)}/keyframe_${item.frameId}.webp`;
     const info = document.createElement("div");
     info.className = "trake-frame-info";
     info.innerHTML = `<strong>Event ${index + 1}</strong><span>Frame ${item.frameId} • ${item.timeMs} ms</span>`;
@@ -101,6 +118,7 @@ function render() {
           ...item,
           frameId,
           timeMs: Math.round((frameId / item.fps) * 1000),
+          previewUrl: null, // Frame mới không được dùng ảnh chụp của frame cũ.
         };
         resetReceipt();
       } else if (action === "up" && index > 0) {
