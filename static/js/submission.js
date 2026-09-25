@@ -82,7 +82,11 @@ function renderModal() {
     context.textContent = `${dres.user?.username || "DRES"} • ${evaluation?.name || dres.selectedEvaluationId || "Chưa chọn evaluation"}${dres.currentTask?.name ? ` • ${dres.currentTask.name}` : ""}`;
   }
   if (details && candidate) {
-    details.textContent = `${candidate.videoId} • frame ${candidate.frameId} • ${candidate.timeMs} ms • ${candidate.source === "player" ? "vị trí video đang dừng" : "keyframe kết quả"}`;
+    const isTraffic = candidate.videoId.startsWith("N");
+    const sourceLabel = candidate.source === "player"
+      ? (isTraffic ? "vị trí video đang dừng [PTS thực tế]" : "vị trí video đang dừng")
+      : (isTraffic ? "keyframe kết quả [Lưu ý: Video VFR nên nộp từ Player]" : "keyframe kết quả");
+    details.textContent = `${candidate.videoId} • frame ${candidate.frameId} • ${candidate.timeMs} ms • ${sourceLabel}`;
   }
   if (routePreview) {
     const routes = getSubmissionRoutes();
@@ -118,6 +122,11 @@ function openSubmissionModal(item) {
 
 export function handleSubmissionCandidate(event, item) {
   event?.stopPropagation();
+  const vid = String(item?.videoId || item?.video_id || "").trim();
+  if (vid.startsWith("N") && getSubmissionMode() === "trake") {
+    alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+    return;
+  }
   try {
     openSubmissionModal(item);
   } catch (error) {
@@ -127,6 +136,11 @@ export function handleSubmissionCandidate(event, item) {
 
 export function handleSequenceSubmission(event, frames) {
   event?.stopPropagation();
+  const firstVid = String(frames?.[0]?.videoId || frames?.[0]?.video_id || "").trim();
+  if (firstVid.startsWith("N") && getSubmissionMode() === "trake") {
+    alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+    return;
+  }
   if (getSubmissionMode() === "trake") {
     try {
       loadTrakeSequence(frames);

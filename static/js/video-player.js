@@ -162,9 +162,12 @@ export function openModal(
 ) {
   closeModal();
   currentOpenVideoId = videoId;
-  highlightActiveCard(videoId, shotData, specificKeyframe);
-
-  elements.modalVideoTitle.textContent = `Playing: ${videoId} (FPS: ${fps})`;
+  const isTrafficVideo = videoId.startsWith("N");
+  if (isTrafficVideo) {
+    elements.modalVideoTitle.textContent = `Playing: ${videoId} (Camera Giao Thông - VFR)`;
+  } else {
+    elements.modalVideoTitle.textContent = `Playing: ${videoId} (FPS: ${fps})`;
+  }
   elements.modalOverlay.classList.remove("hidden");
 
   // --- 1. SETUP PLAYER ---
@@ -340,12 +343,25 @@ export function openModal(
   }
 
   // --- 6. CONTROLS (NEW) ---
+  const isTrafficVideo = videoId.startsWith("N");
   const oldControls =
     elements.modalPlayerSection.querySelector(".frame-controls");
   if (oldControls) oldControls.remove();
   const frameControls = document.createElement("div");
   frameControls.className = "frame-controls";
-  frameControls.innerHTML = `
+  if (isTrafficVideo) {
+    frameControls.innerHTML = `
+        <button id="dynamic-submit-btn" class="modal-submit-btn">Submit</button>
+        <div class="frame-navigation" style="display:flex; align-items:center; gap:8px;">
+            <button class="frame-btn" id="prev-frame-btn" title="Lùi 0.2 giây">-0.2s</button>
+            <div style="background:#21262d; border:1px solid #30363d; border-radius:4px; padding:4px 12px; display:flex; align-items:center; justify-content:center;">
+                <span id="traffic-time-display" style="color:#58a6ff; font-family:monospace; font-size:13px; font-weight:600; min-width:150px; text-align:center;">00:00.000 (0 ms)</span>
+            </div>
+            <button class="frame-btn" id="next-frame-btn" title="Tiến 0.2 giây">+0.2s</button>
+        </div>
+        <div style="width: 80px;"></div>`;
+  } else {
+    frameControls.innerHTML = `
         <button id="dynamic-submit-btn" class="modal-submit-btn">Submit</button>
         <div class="frame-navigation">
             <button class="frame-btn" id="prev-frame-btn">-</button>
@@ -356,6 +372,7 @@ export function openModal(
             <button class="frame-btn" id="next-frame-btn">+</button>
         </div>
         <div style="width: 80px;"></div>`;
+  }
   elements.modalPlayerSection.appendChild(frameControls);
 
   // --- 7. EVENT LISTENERS ---
@@ -378,9 +395,21 @@ export function openModal(
   };
   const updateFrameInfo = () => {
     if (!elements.modalVideoPlayer.duration) return;
-    const cf = Math.round(elements.modalVideoPlayer.currentTime * frameRate);
-    if (document.activeElement !== frameInput) frameInput.value = cf;
-    totalFramesSpan.textContent = `/ ${Math.floor(elements.modalVideoPlayer.duration * frameRate)}`;
+    if (isTrafficVideo) {
+      const trafficTimeSpan = frameControls.querySelector("#traffic-time-display");
+      if (trafficTimeSpan) {
+        const cur = elements.modalVideoPlayer.currentTime;
+        const totalMs = Math.round(cur * 1000);
+        const m = Math.floor(cur / 60);
+        const s = Math.floor(cur % 60);
+        const ms = totalMs % 1000;
+        trafficTimeSpan.textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")} (${totalMs} ms)`;
+      }
+    } else {
+      const cf = Math.round(elements.modalVideoPlayer.currentTime * frameRate);
+      if (frameInput && document.activeElement !== frameInput) frameInput.value = cf;
+      if (totalFramesSpan) totalFramesSpan.textContent = `/ ${Math.floor(elements.modalVideoPlayer.duration * frameRate)}`;
+    }
   };
   elements.modalVideoPlayer.addEventListener("timeupdate", updateProgress);
   elements.modalVideoPlayer.addEventListener("timeupdate", updateFrameInfo);
@@ -409,6 +438,10 @@ export function openModal(
       let previewUrl = null;
 
       if (getSubmissionMode() === "trake") {
+        if (videoId.startsWith("N")) {
+          alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+          return;
+        }
         await waitForSeek(video);
         // Không gắn ảnh của một frame khác nếu người dùng tua tiếp khi đang chờ.
         if (Math.abs(video.currentTime - selectedTime) <= 1 / frameRate) {
@@ -423,27 +456,41 @@ export function openModal(
   });
 
   // Nav Logic
-  const stepFrame = (dir) => {
-    elements.modalVideoPlayer.pause();
-    const cf = Math.round(elements.modalVideoPlayer.currentTime * frameRate);
-    elements.modalVideoPlayer.currentTime = Math.max(
-      0,
-      (cf + dir) / frameRate + 0.0001,
-    );
-  };
-  prevBtn.addEventListener("click", () => stepFrame(-1));
-  nextBtn.addEventListener("click", () => stepFrame(1));
-  frameInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const val = parseInt(frameInput.value, 10);
-      if (!isNaN(val) && val >= 0) {
-        elements.modalVideoPlayer.currentTime = val / frameRate;
-        elements.modalVideoPlayer.pause();
-      }
-      frameInput.blur();
+  if (isTrafficVideo) {
+    const stepTime = (seconds) => {
+      elements.modalVideoPlayer.pause();
+      elements.modalVideoPlayer.currentTime = Math.max(
+        0,
+        Math.min(elements.modalVideoPlayer.duration || 999999, elements.modalVideoPlayer.currentTime + seconds)
+      );
+    };
+    if (prevBtn) prevBtn.addEventListener("click", () => stepTime(-0.2));
+    if (nextBtn) nextBtn.addEventListener("click", () => stepTime(0.2));
+  } else {
+    const stepFrame = (dir) => {
+      elements.modalVideoPlayer.pause();
+      const cf = Math.round(elements.modalVideoPlayer.currentTime * frameRate);
+      elements.modalVideoPlayer.currentTime = Math.max(
+        0,
+        (cf + dir) / frameRate + 0.0001,
+      );
+    };
+    if (prevBtn) prevBtn.addEventListener("click", () => stepFrame(-1));
+    if (nextBtn) nextBtn.addEventListener("click", () => stepFrame(1));
+    if (frameInput) {
+      frameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const val = parseInt(frameInput.value, 10);
+          if (!isNaN(val) && val >= 0) {
+            elements.modalVideoPlayer.currentTime = val / frameRate;
+            elements.modalVideoPlayer.pause();
+          }
+          frameInput.blur();
+        }
+      });
     }
-  });
+  }
 
   // Global Space Key
   const handleKey = (e) => {

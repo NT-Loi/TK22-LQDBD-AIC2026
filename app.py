@@ -51,10 +51,12 @@ def get_safe_video_path(video_name: str) -> Optional[str]:
 
     # Check without extension or with alternative extensions (.mp4, .mov, etc.)
     base_id = os.path.splitext(os.path.basename(video_name))[0]
-    for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV"):
-        cand = os.path.join(video_dir, f"{base_id}{ext}")
-        if os.path.isfile(cand):
-            return cand
+    cand_stems = [base_id, base_id.replace("_", "-"), base_id.replace("-", "_")]
+    for stem in cand_stems:
+        for ext in SUPPORTED_VIDEO_EXTS + (".MP4", ".MOV", ".mov", ".mp4"):
+            cand = os.path.join(video_dir, f"{stem}{ext}")
+            if os.path.isfile(cand):
+                return cand
     return None
 
 @asynccontextmanager

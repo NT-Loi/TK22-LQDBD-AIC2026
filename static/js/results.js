@@ -5,6 +5,7 @@ import {
   handleSequenceSubmission,
   handleSubmissionCandidate,
 } from "./submission.js?v=12";
+import { getSubmissionMode } from "./dres-session.js?v=12";
 
 // Helper: Shuffle array
 function shuffleArray(array) {
@@ -280,13 +281,47 @@ function displayFlatResults(results) {
     const sequenceFrames = Array.isArray(item.temporal_sequence)
       ? item.temporal_sequence
       : (Array.isArray(item.frames) ? item.frames : null);
+    const isTrafficVideo = (item.video_id || "").startsWith("N");
+    if (isTrafficVideo) {
+      submitBtn.title = "Video giao thông (VFR): Click để mở video player và nộp thời gian thực tế";
+    }
+
     if (sequenceFrames?.length) {
       submitBtn.dataset.sequence = "true";
       submitBtn.textContent = getSubmissionButtonLabel({ sequence: true });
-      submitBtn.addEventListener("click", (e) => handleSequenceSubmission(e, sequenceFrames));
+      submitBtn.addEventListener("click", (e) => {
+        if (isTrafficVideo && getSubmissionMode() === "trake") {
+          e.stopPropagation();
+          alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+          return;
+        }
+        handleSequenceSubmission(e, sequenceFrames);
+      });
     } else {
       submitBtn.textContent = getSubmissionButtonLabel();
-      submitBtn.addEventListener("click", (e) => handleSubmissionCandidate(e, item));
+      submitBtn.addEventListener("click", (e) => {
+        if (isTrafficVideo) {
+          e.stopPropagation();
+          if (getSubmissionMode() === "trake") {
+            alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+            return;
+          }
+          const fps = parseFloat(item.fps) || 25;
+          let startTime = item.timeMs ? (item.timeMs / 1000) : (item.keyframe_index / fps);
+          startTime = Math.max(0, startTime - 0.5);
+          openModal(
+            item.video_id,
+            startTime,
+            fps,
+            null,
+            item.keyframe_index,
+            item.temporal_sequence || item.frames,
+          );
+          alert(`⚠️ Video giao thông ${item.video_id} (VFR):\nĐã mở Trình phát video tại khung hình này. Vui lòng kiểm tra và bấm "Nộp vị trí đang dừng" trên video player để lấy thời gian thực tế chính xác nhất.`);
+          return;
+        }
+        handleSubmissionCandidate(e, item);
+      });
     }
 
     // Open Modal
@@ -474,8 +509,25 @@ function displayCaptionResults(results) {
 
     // Submit
     const submitBtn = card.querySelector(".card-submit-btn");
+    const isTrafficVideo = (item.video_id || "").startsWith("N");
+    if (isTrafficVideo) {
+      submitBtn.title = "Video giao thông (VFR): Click để mở video player và nộp thời gian thực tế";
+    }
     submitBtn.textContent = getSubmissionButtonLabel();
-    submitBtn.addEventListener("click", (e) => handleSubmissionCandidate(e, item));
+    submitBtn.addEventListener("click", (e) => {
+      if (isTrafficVideo) {
+        e.stopPropagation();
+        if (getSubmissionMode() === "trake") {
+          alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+          return;
+        }
+        const fps = parseFloat(item.fps) || 25;
+        openCaptionModal(item, fps);
+        alert(`⚠️ Video giao thông ${item.video_id} (VFR):\nĐã mở Trình phát video. Vui lòng kiểm tra và bấm "Nộp vị trí đang dừng" trên video player để lấy thời gian thực tế chính xác nhất.`);
+        return;
+      }
+      handleSubmissionCandidate(e, item);
+    });
 
     // Click -> open modal with ALL keyframes in this shot
     card.addEventListener("click", (e) => {
