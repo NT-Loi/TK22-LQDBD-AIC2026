@@ -88,13 +88,14 @@ class RetrievalSystem:
 
         self.qdrant_client = QdrantClient(url=QDRANT_HOST_URL, prefer_grpc=True, timeout=60.0)
         
+        self.vision_models = VISION_MODELS
         if not self.qdrant_client.collection_exists(QDRANT_COLLECTION_NAME):
             logger.warning(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' does not exist. Please run ingestion.")
         else:
             try:
                 coll_info = self.qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
                 existing_vectors = coll_info.config.params.vectors or {}
-                for m_name, m_cfg in self.vision_models.items():
+                for m_name, m_cfg in VISION_MODELS.items():
                     if m_name not in existing_vectors:
                         logger.info(f"Adding missing named vector '{m_name}' (dim={m_cfg['dim']}) to Qdrant collection '{QDRANT_COLLECTION_NAME}'...")
                         self.qdrant_client.create_vector_name(
