@@ -1,11 +1,11 @@
 import { elements } from "./elements.js";
 import { initFilters, getObjectQueries } from "./filters.js";
 import { searchAPI } from "./api.js?v=10";
-import { initDresSession } from "./dres-session.js?v=12";
-import { initSubmissionUI } from "./submission.js?v=12";
-import { initTrakeWorkspace } from "./trake.js?v=12";
-import { displayResults } from "./results.js?v=10";
-import { initVideoModal, openDirectVideo } from "./video-player.js?v=10";
+import { initDresSession } from "./dres-session.js?v=13";
+import { initSubmissionUI } from "./submission.js?v=14";
+import { initTrakeWorkspace } from "./trake.js?v=14";
+import { displayResults } from "./results.js?v=12";
+import { initVideoModal, openDirectVideo } from "./video-player.js?v=16";
 import { initCatalogTab } from "./catalog.js";
 
 let currentResults = [];

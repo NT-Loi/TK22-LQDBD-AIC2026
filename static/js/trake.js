@@ -6,7 +6,7 @@ import {
   handleSessionExpired,
   refreshCurrentTask,
   requireDresReady,
-} from "./dres-session.js?v=12";
+} from "./dres-session.js?v=13";
 import {
   bindCopyButton,
   clearDresResult,
@@ -154,9 +154,25 @@ function render() {
   }
 }
 
+function setTrakeWorkspaceOpen(isOpen) {
+  const workspace = document.getElementById("trake-workspace");
+  const toggleButton = document.getElementById("open-trake-btn");
+  workspace?.classList.toggle("hidden", !isOpen);
+  workspace?.setAttribute("aria-hidden", String(!isOpen));
+  toggleButton?.setAttribute("aria-expanded", String(isOpen));
+  toggleButton?.classList.toggle("active", isOpen);
+}
+
 export function openTrakeWorkspace() {
-  document.getElementById("trake-workspace")?.classList.remove("hidden");
+  setTrakeWorkspaceOpen(true);
   render();
+}
+
+function toggleTrakeWorkspace() {
+  const workspace = document.getElementById("trake-workspace");
+  const shouldOpen = workspace?.classList.contains("hidden") ?? true;
+  setTrakeWorkspaceOpen(shouldOpen);
+  if (shouldOpen) render();
 }
 
 export function addTrakeCandidate(candidate) {
@@ -218,9 +234,6 @@ async function submitTrake() {
   try {
     await refreshCurrentTask(true);
     if (!requireDresReady()) return;
-    if (getSubmissionMode() !== "trake") {
-      throw new Error("Task DRES hiện tại không còn là TRAKE. Vui lòng kiểm tra lại trước khi nộp.");
-    }
     const dres = getDresState();
     const result = await submitResultAPI({
       evaluationId: dres.selectedEvaluationId,
@@ -241,9 +254,9 @@ async function submitTrake() {
 }
 
 export function initTrakeWorkspace() {
-  document.getElementById("open-trake-btn")?.addEventListener("click", openTrakeWorkspace);
+  document.getElementById("open-trake-btn")?.addEventListener("click", toggleTrakeWorkspace);
   document.getElementById("close-trake-btn")?.addEventListener("click", () => {
-    document.getElementById("trake-workspace")?.classList.add("hidden");
+    setTrakeWorkspaceOpen(false);
   });
   document.getElementById("clear-trake-btn")?.addEventListener("click", () => {
     if (trakeFrames.length && !confirm("Xóa toàn bộ chuỗi TRAKE hiện tại?")) return;
@@ -257,6 +270,9 @@ export function initTrakeWorkspace() {
     previewText,
   );
   document.getElementById("trake-submit-btn")?.addEventListener("click", submitTrake);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setTrakeWorkspaceOpen(false);
+  });
   document.addEventListener("dres:mode-change", (event) => {
     if (event.detail === "trake") openTrakeWorkspace();
   });

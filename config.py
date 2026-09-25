@@ -1,4 +1,41 @@
-DATA_DIR = "data"
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATA_DIR = os.getenv("DATA_DIR", "data")
+
+# Secondary data directories (only loaded if EXTRA_DATA_DIRS is defined in .env)
+_EXTRA_DATA_DIRS_ENV = os.getenv("EXTRA_DATA_DIRS")
+EXTRA_DATA_DIRS = [
+    Path(p.strip()) for p in _EXTRA_DATA_DIRS_ENV.split(";") if p.strip()
+] if _EXTRA_DATA_DIRS_ENV else []
+
+# All video source directories (searched in order)
+VIDEO_DIRS = [
+    Path(DATA_DIR) / "video",
+    *[Path(extra) / "video" for extra in EXTRA_DATA_DIRS if (Path(extra) / "video").is_dir()],
+]
+
+# All keyframe source directories
+KEYFRAME_DIRS = [
+    Path(DATA_DIR) / "keyframe",
+    *[Path(extra) / "keyframe" for extra in EXTRA_DATA_DIRS if (Path(extra) / "keyframe").is_dir()],
+]
+
+# All vision embedding source directories
+EMBEDDING_DIRS = [
+    Path(DATA_DIR) / "embedding",
+    *[Path(extra) / "embedding" for extra in EXTRA_DATA_DIRS if (Path(extra) / "embedding").is_dir()],
+]
+
+# All maps source directories
+MAP_DIRS = [
+    Path(DATA_DIR) / "maps",
+    *[Path(extra) / "maps" for extra in EXTRA_DATA_DIRS if (Path(extra) / "maps").is_dir()],
+]
+
 
 QDRANT_HOST_URL = "http://localhost:6333"
 QDRANT_COLLECTION_NAME = "video_frames"
@@ -12,6 +49,7 @@ ES_CAPTION_INDEX_NAME = "shot_captions"
 OCR_SOURCES = ["V6", "VL1.6"]
 
 VISION_MODELS = {
+    "CLIP":               {"dim": 512,  "weight": 1.0},
     "CLIP_H14":           {"dim": 1024, "weight": 1.0},
     "SigLIP":             {"dim": 1152, "weight": 1.0},
     "SigLIP2":            {"dim": 1536, "weight": 1.0},
@@ -29,7 +67,7 @@ DEFAULT_VISION_MODEL = "SigLIP2"
 HNSW_EF_SEARCH = 128
 
 # Which text encoders to load at init
-TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL]
+TEXT_ENCODERS = ["SigLIP2", "Qwen3_VL_Embedding", CAPTION_MODEL, "CLIP"]
 
 CAPTION_ASPECT_KEYS = [
     "chu_the_hanh_dong",   # Subject & Action

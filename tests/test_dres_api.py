@@ -62,8 +62,10 @@ class DresApiIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "copy-trake-payload-btn",
         ):
             self.assertIn(f'id="{element_id}"', html)
-        self.assertIn('/static/js/main.js?v=13', html)
+        self.assertIn('/static/js/main.js?v=16', html)
         self.assertIn('id="refresh-evaluations-btn"', html)
+        self.assertIn('aria-controls="trake-workspace"', html)
+        self.assertIn('aria-hidden="true"', html)
 
     async def test_refresh_evaluations_fetches_new_active_evaluations(self):
         added_evaluation = {

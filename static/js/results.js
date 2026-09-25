@@ -1,10 +1,10 @@
 import { elements } from "./elements.js";
-import { openModal, openCaptionModal } from "./video-player.js?v=10";
+import { openModal, openCaptionModal } from "./video-player.js?v=16";
 import {
   getSubmissionButtonLabel,
   handleSequenceSubmission,
   handleSubmissionCandidate,
-} from "./submission.js?v=12";
+} from "./submission.js?v=14";
 
 // Helper: Shuffle array
 function shuffleArray(array) {
@@ -292,8 +292,9 @@ function displayFlatResults(results) {
     // Open Modal
     resultElement.addEventListener("click", () => {
       const fps = parseFloat(item.fps) || 25;
-      let startTime = item.keyframe_index / fps;
-      startTime = Math.max(0, startTime - 0.5);
+      const startTime = (item.timeMs !== undefined && item.timeMs !== null)
+        ? Math.max(0, (Number(item.timeMs) / 1000) - 0.5)
+        : Math.max(0, (item.keyframe_index / fps) - 0.5);
 
       // Truyền sequenceData vào tham số cuối
       openModal(
@@ -313,11 +314,20 @@ function displayFlatResults(results) {
 
 
 // --- HELPER FUNCTIONS ---
+let activeCardPreview = null;
+
+export function getActiveCardPreview() {
+  return activeCardPreview;
+}
+
 function setupHoverPreview(element, videoEl, item) {
   let hls = null;
   let hoverTimeout;
 
   const cleanup = () => {
+    if (activeCardPreview && activeCardPreview.card === element) {
+      activeCardPreview = null;
+    }
     if (hls) {
       hls.destroy();
       hls = null;
@@ -337,10 +347,13 @@ function setupHoverPreview(element, videoEl, item) {
   };
 
   element.addEventListener("mouseenter", () => {
+    activeCardPreview = { card: element, video: videoEl, item: item };
     hoverTimeout = setTimeout(() => {
       const videoId = item.video_id;
       const fps = item.fps || 25;
-      const startTime = Math.max(0, item.keyframe_index / fps - 1.0); // Preview trước 1s
+      const startTime = (item.timeMs !== undefined && item.timeMs !== null)
+        ? Math.max(0, (Number(item.timeMs) / 1000) - 1.0)
+        : Math.max(0, item.keyframe_index / fps - 1.0); // Preview trước 1s
       const videoUrl = `/video/${videoId}`;
 
       // Lắng nghe sự kiện timeupdate hoặc playing để hiện video

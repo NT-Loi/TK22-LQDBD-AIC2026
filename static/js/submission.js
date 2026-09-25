@@ -6,8 +6,8 @@ import {
   handleSessionExpired,
   refreshCurrentTask,
   requireDresReady,
-} from "./dres-session.js?v=12";
-import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=12";
+} from "./dres-session.js?v=13";
+import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=14";
 import {
   bindCopyButton,
   clearDresResult,
@@ -118,6 +118,11 @@ function openSubmissionModal(item) {
 
 export function handleSubmissionCandidate(event, item) {
   event?.stopPropagation();
+  const vid = String(item?.videoId || item?.video_id || "").trim();
+  if (vid.startsWith("N") && getSubmissionMode() === "trake") {
+    alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+    return;
+  }
   try {
     openSubmissionModal(item);
   } catch (error) {
@@ -127,6 +132,11 @@ export function handleSubmissionCandidate(event, item) {
 
 export function handleSequenceSubmission(event, frames) {
   event?.stopPropagation();
+  const firstVid = String(frames?.[0]?.videoId || frames?.[0]?.video_id || "").trim();
+  if (firstVid.startsWith("N") && getSubmissionMode() === "trake") {
+    alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
+    return;
+  }
   if (getSubmissionMode() === "trake") {
     try {
       loadTrakeSequence(frames);
@@ -167,10 +177,6 @@ async function confirmSubmission() {
   try {
     await refreshCurrentTask(true);
     if (!requireDresReady()) return;
-    const refreshedMode = getSubmissionMode();
-    if (refreshedMode !== mode) {
-      throw new Error(`Task DRES đã chuyển sang ${refreshedMode.toUpperCase()}. Vui lòng kiểm tra lại trước khi nộp.`);
-    }
     const dres = getDresState();
     const result = await submitResultAPI({
       evaluationId: dres.selectedEvaluationId,

@@ -54,7 +54,45 @@ class TextEncoder(nn.Module):
         pass
 
 class CLIPTextEncoder(TextEncoder):
-    def __init__(self, device: str=None):
+    def __init__(self, device: str = None, model_id: str = "openai/clip-vit-base-patch32"):
+        super().__init__(device)
+
+        self.model_id = model_id
+        logger.info(f"Loading CLIP text model '{model_id}' to device '{self.device}'...")
+        from transformers import CLIPTokenizer, CLIPTextModelWithProjection
+
+        self.tokenizer = CLIPTokenizer.from_pretrained(model_id, token=hf_token)
+        self.model = CLIPTextModelWithProjection.from_pretrained(model_id, token=hf_token)
+        self.model = self.model.to(self.device)
+        self.model.eval()
+
+        logger.info("CLIPTextEncoder initialized successfully.")
+
+    def forward(self, query: Union[str, List[str]], max_length: int = 77):
+        if isinstance(query, str):
+            queries = [query]
+        else:
+            queries = query
+
+        inputs = self.tokenizer(
+            queries,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt"
+        ).to(self.device)
+
+        with torch.inference_mode():
+            outputs = self.model(**inputs)
+            text_features = outputs.text_embeds
+
+        if self.device == "cuda":
+            text_features = text_features.cpu()
+
+        return F.normalize(text_features, p=2, dim=-1).detach().cpu().numpy().astype(np.float32)
+
+class CLIP_H14TextEncoder(TextEncoder):
+    def __init__(self, device: str = None):
         super().__init__(device)
 
         model_id = "ViT-H-14-378-quickgelu"
@@ -71,7 +109,7 @@ class CLIPTextEncoder(TextEncoder):
         self.model.eval()
         self.tokenizer = open_clip.get_tokenizer(model_id)
 
-        logger.info("CLIPTextEncoder initialized successfully.")
+        logger.info("CLIP_H14TextEncoder initialized successfully.")
 
     def forward(self, query: str):
         text_inputs = self.tokenizer([query]).to(self.device)
@@ -79,7 +117,7 @@ class CLIPTextEncoder(TextEncoder):
         with torch.inference_mode():
             text_features = self.model.encode_text(text_inputs)
         
-        if self.device  == "cuda":
+        if self.device == "cuda":
             text_features = text_features.cpu()
             
         return F.normalize(text_features, p=2, dim=-1).detach().numpy().astype(np.float32)
