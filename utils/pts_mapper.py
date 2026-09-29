@@ -141,10 +141,15 @@ class PTSMapper:
 
         kf_idx = item.get("keyframe_index")
         if kf_idx is None:
+            kf_idx = item.get("keyframe_idx")
+        if kf_idx is None:
+            kf_idx = item.get("frame_idx")
+        if kf_idx is None:
             kf_idx = item.get("frameId")
         if kf_idx is not None:
             try:
                 kf_idx_int = int(kf_idx)
+                item["keyframe_index"] = kf_idx_int
                 item["timeMs"] = self.get_time_ms(vid, kf_idx_int, fps)
             except (ValueError, TypeError):
                 pass
@@ -158,10 +163,16 @@ class PTSMapper:
                         sub_item["fps"] = fps
                         sub_idx = sub_item.get("keyframe_index")
                         if sub_idx is None:
+                            sub_idx = sub_item.get("keyframe_idx")
+                        if sub_idx is None:
+                            sub_idx = sub_item.get("frame_idx")
+                        if sub_idx is None:
                             sub_idx = sub_item.get("frameId")
                         if sub_idx is not None:
                             try:
-                                sub_item["timeMs"] = self.get_time_ms(sub_vid, int(sub_idx), fps)
+                                sub_idx_int = int(sub_idx)
+                                sub_item["keyframe_index"] = sub_idx_int
+                                sub_item["timeMs"] = self.get_time_ms(sub_vid, sub_idx_int, fps)
                             except (ValueError, TypeError):
                                 pass
 

@@ -77,6 +77,7 @@ class RetrievalSystem:
         self.device = device
 
         self.data_dir = Path(data_dir)
+        self.keyframe_dirs = list(KEYFRAME_DIRS)
         self.keyframe_dir = self.data_dir / "keyframe"
         self.vision_embedding_dir = self.data_dir / "embedding"
         self.caption_dir = self.data_dir / "caption"
@@ -158,10 +159,11 @@ class RetrievalSystem:
         self._load_video_keyframes()
 
     def _load_video_keyframes(self):
-        """Pre-index keyframes, reusing cached entries for unchanged video directories."""
-        kf_base = getattr(self, "keyframe_dir", self.data_dir / "keyframe")
-        if not kf_base.exists() or not kf_base.is_dir():
-            logger.warning(f"Keyframe directory {kf_base} does not exist.")
+        """Pre-index keyframes across all KEYFRAME_DIRS, reusing cached entries for unchanged video directories."""
+        kf_dirs = getattr(self, "keyframe_dirs", KEYFRAME_DIRS)
+        valid_kf_dirs = [d for d in kf_dirs if d.exists() and d.is_dir()]
+        if not valid_kf_dirs:
+            logger.warning("No valid keyframe directory found.")
             return
 
         logger.info("Pre-indexing video keyframes into RAM...")
@@ -177,26 +179,40 @@ class RetrievalSystem:
         count = 0
         cache_out = {}
         try:
-            for vid_entry in os.scandir(kf_base):
-                if vid_entry.is_dir():
-                    vid = vid_entry.name
-                    mtime_ns = vid_entry.stat().st_mtime_ns
-                    cached = cached_videos.get(vid, {})
-                    if cached.get("mtime_ns") == mtime_ns:
-                        indices = cached.get("indices", [])
-                    else:
-                        indices = []
-                        for f_entry in os.scandir(vid_entry.path):
-                            fname = f_entry.name
-                            if fname.startswith("keyframe_") and fname.endswith(".webp"):
-                                try:
-                                    indices.append(int(fname[9:-5]))
-                                except ValueError:
-                                    continue
-                        indices.sort()
-                    self.video_keyframes[vid] = indices
-                    cache_out[vid] = {"mtime_ns": mtime_ns, "indices": indices}
-                    count += 1
+            entries_to_scan = []
+            seen_vids = set()
+            for kf_base in valid_kf_dirs:
+                for vid_entry in os.scandir(kf_base):
+                    if vid_entry.is_dir():
+                        vid = vid_entry.name
+                        if vid not in seen_vids:
+                            seen_vids.add(vid)
+                            entries_to_scan.append((vid, vid_entry.path, vid_entry.stat().st_mtime_ns))
+
+            def _process_video_dir(item):
+                vid, path, mtime_ns = item
+                cached = cached_videos.get(vid)
+                if cached and cached.get("mtime_ns") == mtime_ns:
+                    return vid, mtime_ns, cached.get("indices", [])
+                indices = []
+                for f_entry in os.scandir(path):
+                    fname = f_entry.name
+                    if fname.startswith("keyframe_") and fname.endswith(".webp"):
+                        try:
+                            indices.append(int(fname[9:-5]))
+                        except ValueError:
+                            continue
+                indices.sort()
+                return vid, mtime_ns, indices
+
+            with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 4)) as pool:
+                results = list(pool.map(_process_video_dir, entries_to_scan))
+
+            for vid, mtime_ns, indices in results:
+                self.video_keyframes[vid] = indices
+                cache_out[vid] = {"mtime_ns": mtime_ns, "indices": indices}
+                count += 1
+
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path = cache_path.with_suffix(".tmp")
@@ -1751,9 +1767,16 @@ class RetrievalSystem:
                 return kfs[i:j]
             return []
 
-        # Fallback to disk if video_keyframes is not populated
-        kf_dir = self.data_dir / "keyframe" / video_id
-        if not kf_dir.exists() or not kf_dir.is_dir():
+        # Fallback to disk across keyframe directories if video_keyframes is not populated
+        kf_dirs = getattr(self, "keyframe_dirs", [self.data_dir / "keyframe"])
+        kf_dir = None
+        for d in kf_dirs:
+            candidate = d / video_id
+            if candidate.exists() and candidate.is_dir():
+                kf_dir = candidate
+                break
+
+        if not kf_dir:
             return []
 
         keyframes = []

@@ -127,6 +127,7 @@ function showEvaluationModal() {
         closeLoginModal();
         updateConnectionUI();
         await refreshCurrentTask(true);
+        document.dispatchEvent(new CustomEvent("dres:evaluation-selected", { detail: state.selectedEvaluationId }));
       } catch (error) {
         button.disabled = false;
         alert(`Không thể chọn evaluation: ${error.message}`);
@@ -306,7 +307,24 @@ export async function initDresSession() {
   document.addEventListener("dres:session-expired", handleSessionExpired);
 
   try {
-    applySession(await getDresSessionAPI());
+    let sessionData = await getDresSessionAPI();
+    if (!sessionData?.connected) {
+      try {
+        sessionData = await loginDefaultAPI();
+      } catch (e) {
+        console.warn("Không thể tự động kết nối DRES:", e);
+      }
+    }
+    applySession(sessionData);
+    if (state.connected && !state.selectedEvaluationId && state.evaluations.length) {
+      state.selectedEvaluationId = String(state.evaluations[0].id);
+      try {
+        await selectEvaluationAPI(state.selectedEvaluationId);
+      } catch (e) {
+        console.warn("Không thể chọn evaluation mặc định:", e);
+      }
+      updateConnectionUI();
+    }
     if (state.selectedEvaluationId) await refreshCurrentTask(true);
   } catch (error) {
     console.warn("Không thể khôi phục phiên DRES:", error);

@@ -1,10 +1,10 @@
 import { elements } from "./elements.js";
-import { openModal, openCaptionModal } from "./video-player.js?v=16";
+import { openModal, openCaptionModal } from "./video-player.js?v=21";
 import {
   getSubmissionButtonLabel,
   handleSequenceSubmission,
   handleSubmissionCandidate,
-} from "./submission.js?v=14";
+} from "./submission.js?v=21";
 
 // Helper: Shuffle array
 function shuffleArray(array) {

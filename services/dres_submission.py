@@ -19,6 +19,12 @@ def normalize_video_id(video_id: str) -> str:
     normalized = stem if extension.lower() in VIDEO_EXTENSIONS else raw
     if not normalized or not VIDEO_ID_PATTERN.fullmatch(normalized):
         raise ValueError("Video ID không hợp lệ")
+    # AIC 2026 rule: Traffic videos (prefix N) in DRES use hyphens (e.g. N097-V001), not underscores
+    if re.match(r"^N\d+_", normalized, re.IGNORECASE):
+        normalized = re.sub(r"^(N\d+)_([A-Za-z0-9]+)$", r"\1-\2", normalized, flags=re.IGNORECASE)
+    # L-series videos in DRES use underscores (e.g. L21_V001), not hyphens
+    elif re.match(r"^L\d+-", normalized, re.IGNORECASE):
+        normalized = re.sub(r"^(L\d+)-([A-Za-z0-9]+)$", r"\1_\2", normalized, flags=re.IGNORECASE)
     return normalized
 
 

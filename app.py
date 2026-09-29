@@ -9,6 +9,7 @@ import uvicorn
 import os
 import hashlib
 import json
+import cv2
 from contextlib import asynccontextmanager
 
 
@@ -69,17 +70,103 @@ def get_safe_video_path(video_name: str) -> Optional[str]:
                     return cand
     return None
 
-def get_safe_keyframe_path(path: str) -> Optional[str]:
-    """Resolves keyframe path across all configured KEYFRAME_DIRS."""
+def find_keyframe_dir(vid: str) -> Optional[str]:
+    """Locates the directory containing keyframes for a given video ID across KEYFRAME_DIRS."""
+    cand_stems = [vid, vid.replace("_", "-"), vid.replace("-", "_")]
     for kdir in KEYFRAME_DIRS:
         kdir_str = str(kdir)
         if not os.path.isdir(kdir_str):
             continue
-        kdir_abs = os.path.abspath(kdir_str)
-        full_path = os.path.abspath(os.path.join(kdir_abs, path))
-        if os.path.commonpath([kdir_abs, full_path]) == kdir_abs and os.path.isfile(full_path):
-            return full_path
+        for stem in cand_stems:
+            p = os.path.join(kdir_str, stem)
+            if os.path.isdir(p):
+                return p
     return None
+
+def get_safe_keyframe_path(path: str) -> Optional[str]:
+    """Resolves keyframe path across all configured KEYFRAME_DIRS, supporting _ and - directory aliases."""
+    parts = path.strip("/").split("/", 1)
+    if len(parts) == 2:
+        dir_name, filename = parts
+        cand_dirs = [dir_name, dir_name.replace("_", "-"), dir_name.replace("-", "_")]
+    else:
+        cand_dirs = [""]
+        filename = parts[0]
+
+    search_dirs = list(KEYFRAME_DIRS) + [os.path.join("data", ".cache", "extracted_keyframes")]
+    for kdir in search_dirs:
+        kdir_str = str(kdir)
+        if not os.path.isdir(kdir_str):
+            continue
+        kdir_abs = os.path.abspath(kdir_str)
+        for cd in cand_dirs:
+            full_path = os.path.abspath(os.path.join(kdir_abs, cd, filename)) if cd else os.path.abspath(os.path.join(kdir_abs, filename))
+            if os.path.commonpath([kdir_abs, full_path]) == kdir_abs and os.path.isfile(full_path):
+                return full_path
+    return None
+
+def extract_frame_from_video(vid: str, frame_idx: int) -> Optional[str]:
+    """Extracts a specific frame directly from video source using OpenCV, caches as WebP, and returns the file path."""
+    cache_file = os.path.abspath(os.path.join("data", ".cache", "extracted_keyframes", vid, f"keyframe_{frame_idx}.webp"))
+    if os.path.isfile(cache_file):
+        return cache_file
+
+    vpath = get_safe_video_path(vid)
+    if not vpath or not os.path.isfile(vpath):
+        return None
+
+    cap = cv2.VideoCapture(vpath)
+    if not cap.isOpened():
+        return None
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            success = cv2.imwrite(cache_file, frame, [cv2.IMWRITE_WEBP_QUALITY, 85])
+            if success and os.path.isfile(cache_file):
+                return cache_file
+    except Exception as e:
+        print(f"Warning: Failed to extract frame {frame_idx} from {vid}: {e}")
+    finally:
+        cap.release()
+    return None
+
+def find_nearest_keyframe_path(vid: str, frame_idx: int) -> Optional[str]:
+    """Finds the path to the closest existing keyframe in a video when an exact frame is requested."""
+    global system
+    if system and hasattr(system, "video_keyframes") and vid in system.video_keyframes:
+        kfs = system.video_keyframes[vid]
+        if kfs:
+            import bisect
+            pos = bisect.bisect_left(kfs, frame_idx)
+            candidates = []
+            if pos < len(kfs):
+                candidates.append(kfs[pos])
+            if pos > 0:
+                candidates.append(kfs[pos - 1])
+            if candidates:
+                best_idx = min(candidates, key=lambda x: abs(x - frame_idx))
+                return get_safe_keyframe_path(f"{vid}/keyframe_{best_idx}.webp")
+
+    kdir = find_keyframe_dir(vid)
+    if not kdir:
+        return None
+    try:
+        files = []
+        for fe in os.scandir(kdir):
+            if fe.name.startswith("keyframe_") and fe.name.endswith(".webp"):
+                try:
+                    idx = int(fe.name[9:-5])
+                    files.append((idx, fe.path))
+                except ValueError:
+                    pass
+        if not files:
+            return None
+        best = min(files, key=lambda x: abs(x[0] - frame_idx))
+        return best[1]
+    except OSError:
+        return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -87,6 +174,8 @@ async def lifespan(app: FastAPI):
     # Initialize the retrieval system when the app starts
     system = RetrievalSystem(re_ingest=False)
     video_metadata = load_video_metadata()
+    # Pre-populate videos_cache so catalog and keyframe endpoints respond instantly
+    scan_all_videos()
     yield
     system = None
     video_metadata = {}
@@ -120,16 +209,27 @@ async def serve_video(video_name: str):
     if not file_path:
         raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found")
     media_type = "video/mp4" if file_path.lower().endswith((".mp4", ".mov")) else None
-    return FileResponse(file_path, media_type=media_type)
+    return FileResponse(file_path, media_type=media_type, headers={"Access-Control-Allow-Origin": "*"})
 
 # Keyframe serving endpoint across all configured keyframe directories
 @app.get("/keyframes/{path:path}")
 async def serve_keyframe(path: str):
     file_path = get_safe_keyframe_path(path)
     if not file_path:
-        placeholder_path = os.path.join("static", "placeholder.png")
-        if os.path.isfile(placeholder_path):
-            return FileResponse(placeholder_path, media_type="image/png")
+        parts = path.strip("/").split("/")
+        if len(parts) == 2 and parts[1].startswith("keyframe_") and parts[1].endswith(".webp"):
+            vid = parts[0]
+            try:
+                frame_idx = int(parts[1][9:-5])
+                # 1. On-demand exact frame capture from video file
+                file_path = extract_frame_from_video(vid, frame_idx)
+                # 2. Fallback to nearest keyframe if video extraction fails
+                if not file_path:
+                    file_path = find_nearest_keyframe_path(vid, frame_idx)
+            except ValueError:
+                pass
+
+    if not file_path:
         raise HTTPException(status_code=404, detail=f"Keyframe '{path}' not found")
     return FileResponse(file_path)
 
@@ -380,30 +480,34 @@ async def get_video_keyframes(video_id: str):
     raw_vid = video_id.strip()
     vid = os.path.splitext(raw_vid)[0]
     fps = 25.0
-    for key in (vid, raw_vid):
+    for key in (vid, raw_vid, vid.replace("-", "_"), vid.replace("_", "-")):
         if key in video_metadata and "fps" in video_metadata[key]:
             fps = video_metadata[key]["fps"]
             break
 
-    kf_dir = os.path.join("data", "keyframe", vid)
+    target_dir = find_keyframe_dir(vid)
     keyframes = []
-    if os.path.exists(kf_dir) and os.path.isdir(kf_dir):
-        for fname in os.listdir(kf_dir):
-            if fname.startswith("keyframe_") and fname.endswith(".webp"):
-                try:
-                    idx = int(fname.replace("keyframe_", "").replace(".webp", ""))
-                    keyframes.append({
-                        "video_id": vid,
-                        "keyframe_index": idx,
-                        "fps": fps,
-                        "timeMs": get_video_time_ms(vid, idx, fps)
-                    })
-                except ValueError:
-                    pass
+    actual_vid = os.path.basename(target_dir) if target_dir else vid
+    if target_dir and os.path.isdir(target_dir):
+        try:
+            for entry in os.scandir(target_dir):
+                if entry.name.startswith("keyframe_") and entry.name.endswith(".webp"):
+                    try:
+                        idx = int(entry.name.replace("keyframe_", "").replace(".webp", ""))
+                        keyframes.append({
+                            "video_id": actual_vid,
+                            "keyframe_index": idx,
+                            "fps": fps,
+                            "timeMs": get_video_time_ms(actual_vid, idx, fps)
+                        })
+                    except ValueError:
+                        pass
+        except OSError:
+            pass
         keyframes.sort(key=lambda x: x["keyframe_index"])
         
     return {
-        "video_id": vid,
+        "video_id": actual_vid,
         "fps": fps,
         "keyframes": keyframes
     }
@@ -414,31 +518,35 @@ async def get_shot_keyframes(video_id: str, start_frame: int = 0, end_frame: int
     raw_vid = video_id.strip()
     vid = os.path.splitext(raw_vid)[0]
     fps = 25.0
-    for key in (vid, raw_vid):
+    for key in (vid, raw_vid, vid.replace("-", "_"), vid.replace("_", "-")):
         if key in video_metadata and "fps" in video_metadata[key]:
             fps = video_metadata[key]["fps"]
             break
 
-    kf_dir = os.path.join("data", "keyframe", vid)
+    target_dir = find_keyframe_dir(vid)
     keyframes = []
-    if os.path.exists(kf_dir) and os.path.isdir(kf_dir):
-        for fname in os.listdir(kf_dir):
-            if fname.startswith("keyframe_") and fname.endswith(".webp"):
-                try:
-                    idx = int(fname.replace("keyframe_", "").replace(".webp", ""))
-                    if start_frame <= idx <= end_frame:
-                        keyframes.append({
-                            "video_id": vid,
-                            "keyframe_index": idx,
-                            "fps": fps,
-                            "timeMs": get_video_time_ms(vid, idx, fps)
-                        })
-                except ValueError:
-                    pass
+    actual_vid = os.path.basename(target_dir) if target_dir else vid
+    if target_dir and os.path.isdir(target_dir):
+        try:
+            for entry in os.scandir(target_dir):
+                if entry.name.startswith("keyframe_") and entry.name.endswith(".webp"):
+                    try:
+                        idx = int(entry.name.replace("keyframe_", "").replace(".webp", ""))
+                        if start_frame <= idx <= end_frame:
+                            keyframes.append({
+                                "video_id": actual_vid,
+                                "keyframe_index": idx,
+                                "fps": fps,
+                                "timeMs": get_video_time_ms(actual_vid, idx, fps)
+                            })
+                    except ValueError:
+                        pass
+        except OSError:
+            pass
         keyframes.sort(key=lambda x: x["keyframe_index"])
 
     return {
-        "video_id": vid,
+        "video_id": actual_vid,
         "fps": fps,
         "start_frame": start_frame,
         "end_frame": end_frame,
@@ -449,28 +557,68 @@ videos_cache = []
 
 def scan_all_videos():
     global videos_cache
-    kf_dir = os.path.join("data", "keyframe")
-    videos = []
-    if os.path.exists(kf_dir) and os.path.isdir(kf_dir):
-        for v_name in sorted(os.listdir(kf_dir)):
-            v_path = os.path.join(kf_dir, v_name)
-            if os.path.isdir(v_path):
-                files = [f for f in os.listdir(v_path) if f.endswith(".webp")]
-                fps = 25.0
-                if v_name in video_metadata and "fps" in video_metadata[v_name]:
-                    fps = video_metadata[v_name]["fps"]
-                
-                sorted_files = sorted(files, key=lambda x: int(x.replace("keyframe_", "").replace(".webp", "")) if x.replace("keyframe_", "").replace(".webp", "").isdigit() else 0)
-                first_kf = sorted_files[0] if sorted_files else None
-                
-                videos.append({
-                    "video_id": v_name,
-                    "fps": fps,
-                    "keyframe_count": len(files),
-                    "first_keyframe": first_kf
-                })
-    videos_cache = videos
-    return videos
+    cache_path = os.path.join("data", ".cache", "videos_catalog.json")
+    if os.path.isfile(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                videos_cache = json.load(f)
+                if videos_cache:
+                    return videos_cache
+        except Exception as e:
+            print(f"Warning: Failed to load videos catalog cache: {e}")
+
+    videos_by_id = {}
+    for kdir in KEYFRAME_DIRS:
+        kdir_str = str(kdir)
+        if not os.path.isdir(kdir_str):
+            continue
+        try:
+            for entry in os.scandir(kdir_str):
+                if entry.is_dir() and entry.name not in videos_by_id:
+                    v_name = entry.name
+                    fps = 25.0
+                    for k in (v_name, v_name.replace("-", "_"), v_name.replace("_", "-")):
+                        if k in video_metadata and "fps" in video_metadata[k]:
+                            fps = video_metadata[k]["fps"]
+                            break
+                    
+                    files = []
+                    try:
+                        for fe in os.scandir(entry.path):
+                            if fe.name.endswith(".webp"):
+                                files.append(fe.name)
+                    except OSError:
+                        pass
+                    
+                    first_kf = None
+                    if files:
+                        sorted_files = sorted(
+                            files,
+                            key=lambda x: int(x.replace("keyframe_", "").replace(".webp", ""))
+                            if x.replace("keyframe_", "").replace(".webp", "").isdigit()
+                            else 0
+                        )
+                        first_kf = sorted_files[0]
+                    
+                    videos_by_id[v_name] = {
+                        "video_id": v_name,
+                        "fps": fps,
+                        "keyframe_count": len(files),
+                        "first_keyframe": first_kf,
+                    }
+        except OSError:
+            pass
+
+    videos_cache = sorted(videos_by_id.values(), key=lambda x: x["video_id"])
+    if videos_cache:
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(videos_cache, f)
+        except Exception as e:
+            print(f"Warning: Failed to write videos catalog cache: {e}")
+
+    return videos_cache
 
 @app.get("/api/videos")
 async def get_videos():
@@ -563,10 +711,24 @@ async def _login_to_dres(
     except DresApiError as error:
         raise _dres_http_error(error) from error
 
+    selected_eval_id = None
+    for ev in evaluations:
+        ev_id = str(ev.get("id"))
+        try:
+            task = await dres_client.current_task(dres_user["sessionId"], ev_id)
+            if task and task.get("name"):
+                selected_eval_id = ev_id
+                break
+        except Exception:
+            pass
+    if not selected_eval_id and evaluations:
+        selected_eval_id = str(evaluations[0].get("id"))
+
     session = dres_sessions.create(
         dres_user["sessionId"],
         _public_user(dres_user),
         evaluations,
+        selected_evaluation_id=selected_eval_id,
     )
     response.set_cookie(
         DRES_COOKIE_NAME,
@@ -601,15 +763,28 @@ async def dres_custom_login(data: DresLoginData, request: Request, response: Res
 
 
 @app.get("/api/dres/session")
-async def dres_session_status(request: Request):
+async def dres_session_status(request: Request, response: Response):
     local_id = request.cookies.get(DRES_COOKIE_NAME)
     session = dres_sessions.get(local_id)
+    if session is None and DRES_DEFAULT_PASSWORD:
+        try:
+            return await _login_to_dres(
+                request,
+                response,
+                DRES_DEFAULT_USERNAME,
+                DRES_DEFAULT_PASSWORD,
+            )
+        except Exception as e:
+            logger.warning(f"DRES auto-login on session check failed: {e}")
+
     if session is None:
         return {
             "connected": False,
             "defaultUsername": DRES_DEFAULT_USERNAME,
             "dresBaseUrl": DRES_BASE_URL,
         }
+    if session.selected_evaluation_id is None and session.evaluations:
+        session.selected_evaluation_id = str(session.evaluations[0].get("id"))
     return _session_response(session)
 
 
@@ -674,6 +849,8 @@ def _submission_fingerprint(
 @app.post("/api/dres/submit")
 async def dres_submit(data: DresSubmissionData, request: Request):
     local_id, session = _require_dres_session(request)
+    if not session.selected_evaluation_id and session.evaluations:
+        session.selected_evaluation_id = str(session.evaluations[0].get("id"))
     evaluation_id = data.evaluationId or session.selected_evaluation_id
     if not evaluation_id:
         raise HTTPException(status_code=422, detail="Chưa chọn evaluation")

@@ -1,12 +1,12 @@
 import { elements } from "./elements.js";
 import { initFilters, getObjectQueries } from "./filters.js";
 import { searchAPI } from "./api.js?v=10";
-import { initDresSession } from "./dres-session.js?v=13";
-import { initSubmissionUI } from "./submission.js?v=14";
-import { initTrakeWorkspace } from "./trake.js?v=14";
-import { displayResults } from "./results.js?v=12";
-import { initVideoModal, openDirectVideo } from "./video-player.js?v=16";
-import { initCatalogTab } from "./catalog.js";
+import { initDresSession } from "./dres-session.js?v=21";
+import { initSubmissionUI } from "./submission.js?v=21";
+import { initTrakeWorkspace } from "./trake.js?v=21";
+import { displayResults } from "./results.js?v=21";
+import { initVideoModal, openDirectVideo } from "./video-player.js?v=21";
+import { initCatalogTab } from "./catalog.js?v=21";
 
 let currentResults = [];
 let isGroupShots = false;

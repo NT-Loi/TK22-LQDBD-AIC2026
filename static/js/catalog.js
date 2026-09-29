@@ -1,4 +1,4 @@
-import { openDirectVideo } from "./video-player.js";
+import { openDirectVideo } from "./video-player.js?v=21";
 
 let allCatalogVideos = [];
 let selectedVideoId = null;

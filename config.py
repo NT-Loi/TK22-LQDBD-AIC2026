@@ -37,14 +37,15 @@ MAP_DIRS = [
 ]
 
 
-QDRANT_HOST_URL = "http://localhost:6333"
-QDRANT_COLLECTION_NAME = "video_frames"
-QDRANT_SHOT_CAPTION_COLLECTION_NAME = "shot_captions"
+QDRANT_HOST_URL = os.getenv("QDRANT_HOST_URL", "http://localhost:6333")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "video_frames")
+QDRANT_SHOT_CAPTION_COLLECTION_NAME = os.getenv("QDRANT_SHOT_CAPTION_COLLECTION_NAME", "shot_captions")
 
-ES_HOST_URL = "http://localhost:9200"
-ES_OCR_INDEX_NAME = "ocr_frames"
-ES_TRANSCRIPT_INDEX_NAME = "transcript_segments"
-ES_CAPTION_INDEX_NAME = "shot_captions"
+ES_HOST_URL = os.getenv("ES_HOST_URL", "http://localhost:9200")
+# ES_HOST_URL = "http://172.27.96.1:9200"
+ES_OCR_INDEX_NAME = os.getenv("ES_OCR_INDEX_NAME", "ocr_frames")
+ES_TRANSCRIPT_INDEX_NAME = os.getenv("ES_TRANSCRIPT_INDEX_NAME", "transcript_segments")
+ES_CAPTION_INDEX_NAME = os.getenv("ES_CAPTION_INDEX_NAME", "shot_captions")
 
 OCR_SOURCES = ["V6", "VL1.6"]
 
@@ -68,7 +69,9 @@ HNSW_EF_SEARCH = 64
 
 
 # Which text encoders to load at init
-TEXT_ENCODERS = ["SigLIP2", CAPTION_MODEL, "CLIP"]
+# TEXT_ENCODERS = ["SigLIP2", CAPTION_MODEL, "CLIP", "Qwen3_VL_Embedding"]
+# TEXT_ENCODERS = ["SigLIP2", CAPTION_MODEL, "CLIP"]
+TEXT_ENCODERS = ["SigLIP2", CAPTION_MODEL, "Qwen3_VL_Embedding"]
 
 CAPTION_ASPECT_KEYS = [
     "chu_the_hanh_dong",   # Subject & Action

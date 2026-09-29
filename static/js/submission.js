@@ -6,23 +6,38 @@ import {
   handleSessionExpired,
   refreshCurrentTask,
   requireDresReady,
-} from "./dres-session.js?v=13";
-import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=14";
+} from "./dres-session.js?v=21";
+import { addTrakeCandidate, loadTrakeSequence } from "./trake.js?v=21";
 import {
   bindCopyButton,
   clearDresResult,
   renderDresError,
   renderDresReceipt,
-} from "./dres-result.js?v=12";
+} from "./dres-result.js?v=21";
 
 let candidate = null;
 let submitting = false;
 let submitted = false;
 
+let pendingItemToSubmit = null;
+
+export function resumePendingSubmission() {
+  if (pendingItemToSubmit && requireDresReady()) {
+    const item = pendingItemToSubmit;
+    pendingItemToSubmit = null;
+    openSubmissionModal(item);
+  }
+}
+
 function normalizeCandidate(item) {
-  const videoId = String(item.videoId || item.video_id || "").trim();
+  let videoId = String(item.videoId || item.video_id || "").trim();
+  if (/^N\d+_/i.test(videoId)) {
+    videoId = videoId.replace(/^(N\d+)_([A-Za-z0-9]+)$/i, "$1-$2");
+  } else if (/^L\d+-/i.test(videoId)) {
+    videoId = videoId.replace(/^(L\d+)-([A-Za-z0-9]+)$/i, "$1_$2");
+  }
   const fps = Number(item.fps) || 25;
-  const frameId = Number(item.frameId ?? item.keyframe_index);
+  const frameId = Number(item.frameId ?? item.keyframe_index ?? item.keyframe_idx ?? item.frame_idx);
   const hasExplicitTime = item.timeMs !== undefined && item.timeMs !== null;
   const explicitTime = Number(item.timeMs);
   const timeMs = hasExplicitTime && Number.isFinite(explicitTime)
@@ -38,7 +53,6 @@ function normalizeCandidate(item) {
     timeMs,
     source: item.source || "result",
     previewUrl: typeof item.previewUrl === "string" ? item.previewUrl : null,
-
   };
 }
 
@@ -98,8 +112,9 @@ function renderModal() {
 }
 
 function openSubmissionModal(item) {
-  if (!requireDresReady()) return;
   candidate = normalizeCandidate(item);
+  pendingItemToSubmit = item;
+
   if (getSubmissionMode() === "trake") {
     addTrakeCandidate(candidate);
     return;
@@ -113,6 +128,10 @@ function openSubmissionModal(item) {
   if (answerInput) answerInput.value = "";
   document.getElementById("submission-modal")?.classList.remove("hidden");
   renderModal();
+
+  if (!requireDresReady()) {
+    return;
+  }
   refreshCurrentTask(false);
 }
 
@@ -234,6 +253,13 @@ export function initSubmissionUI() {
     submitted = false;
     clearDresResult(document.getElementById("submission-result"));
     updateSubmitButtonLabels();
+    renderModal();
+  });
+  document.addEventListener("dres:evaluation-selected", () => {
+    resumePendingSubmission();
+    renderModal();
+  });
+  document.addEventListener("dres:state-change", () => {
     renderModal();
   });
   updateSubmitButtonLabels();

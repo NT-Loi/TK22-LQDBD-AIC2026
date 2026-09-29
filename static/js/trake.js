@@ -6,13 +6,13 @@ import {
   handleSessionExpired,
   refreshCurrentTask,
   requireDresReady,
-} from "./dres-session.js?v=13";
+} from "./dres-session.js?v=21";
 import {
   bindCopyButton,
   clearDresResult,
   renderDresError,
   renderDresReceipt,
-} from "./dres-result.js?v=12";
+} from "./dres-result.js?v=21";
 
 let trakeVideoId = null;
 let trakeFrames = [];
@@ -26,7 +26,7 @@ function resetReceipt() {
 
 function normalizeCandidate(candidate) {
   const videoId = String(candidate.videoId || candidate.video_id || "").trim();
-  const frameId = Number(candidate.frameId ?? candidate.keyframe_index);
+  const frameId = Number(candidate.frameId ?? candidate.keyframe_index ?? candidate.keyframe_idx ?? candidate.frame_idx);
   const fps = Number(candidate.fps) || 25;
   if (!videoId || !Number.isInteger(frameId) || frameId < 0) {
     throw new Error("Mốc TRAKE không hợp lệ.");
@@ -71,18 +71,26 @@ function render() {
     row.className = "trake-frame-row";
     const image = document.createElement("img");
     image.alt = `Event ${index + 1}, frame ${item.frameId}`;
-    // Ưu tiên keyframe đã có. Nếu 404, dùng ảnh vừa chụp từ player.
-    let fallbackStep = 0;
-    image.onerror = () => {
-      if (fallbackStep === 0 && item.previewUrl) {
-        fallbackStep = 1;
-        image.src = item.previewUrl;
-        return;
-      }
-      image.onerror = null;
-      image.src = "/static/placeholder.png";
-    };
-    image.src = `/keyframes/${encodeURIComponent(item.videoId)}/keyframe_${item.frameId}.webp`;
+    image.loading = "lazy";
+    const keyframeUrl = `/keyframes/${encodeURIComponent(item.videoId)}/keyframe_${item.frameId}.webp`;
+
+    if (item.previewUrl) {
+      // Ưu tiên hiển thị ngay ảnh chụp từ video player
+      image.src = item.previewUrl;
+      image.onerror = () => {
+        image.onerror = () => {
+          image.onerror = null;
+          image.src = "/static/placeholder.png";
+        };
+        image.src = keyframeUrl;
+      };
+    } else {
+      image.src = keyframeUrl;
+      image.onerror = () => {
+        image.onerror = null;
+        image.src = "/static/placeholder.png";
+      };
+    }
     const info = document.createElement("div");
     info.className = "trake-frame-info";
     info.innerHTML = `<strong>Event ${index + 1}</strong><span>Frame ${item.frameId} • ${item.timeMs} ms</span>`;

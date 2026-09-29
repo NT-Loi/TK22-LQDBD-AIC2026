@@ -2,9 +2,9 @@ import { elements } from "./elements.js";
 import {
   getSubmissionButtonLabel,
   handlePlayerSubmission,
-} from "./submission.js?v=14";
-import { getSubmissionMode } from "./dres-session.js?v=13";
-import { getActiveCardPreview } from "./results.js?v=13";
+} from "./submission.js?v=21";
+import { getSubmissionMode } from "./dres-session.js?v=21";
+import { getActiveCardPreview } from "./results.js?v=21";
 
 let currentOpenVideoId = null;
 let currentFps = 25.0;
@@ -27,20 +27,21 @@ function waitForSeek(video) {
 
 // Chụp chính khung hình đã giải mã trong player, không tải/giải mã video lần hai.
 function captureSmallPreview(video) {
-  if (video.seeking || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+  if (!video || !video.videoWidth || !video.videoHeight) {
     return null;
   }
 
-  const scale = Math.min(1, 320 / video.videoWidth);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
-  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
-
   try {
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    const scale = Math.min(1, 320 / video.videoWidth);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.7);
-  } catch {
-    // Không để lỗi tạo ảnh cản việc thêm mốc TRAKE.
+  } catch (err) {
+    console.warn("captureSmallPreview failed:", err);
     return null;
   }
 }
@@ -562,7 +563,8 @@ export function openModal(
 
     try {
       const video = elements.modalVideoPlayer;
-      video.pause(); // Giữ hành vi hiện tại khi chọn frame.
+      video.pause();
+      await waitForSeek(video);
       const selectedTime = video.currentTime;
       let previewUrl = null;
 
@@ -571,11 +573,7 @@ export function openModal(
           alert("⚠️ Task TRAKE không sử dụng video giao thông (prefix N) theo quy định của BTC!");
           return;
         }
-        await waitForSeek(video);
-        // Không gắn ảnh của một frame khác nếu người dùng tua tiếp khi đang chờ.
-        if (Math.abs(video.currentTime - selectedTime) <= 1 / frameRate) {
-          previewUrl = captureSmallPreview(video);
-        }
+        previewUrl = captureSmallPreview(video);
       }
 
       handlePlayerSubmission({ videoId, currentTime: selectedTime, fps: frameRate, previewUrl });

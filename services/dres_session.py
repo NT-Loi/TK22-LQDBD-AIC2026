@@ -32,9 +32,18 @@ class DresSessionStore:
         dres_session_id: str,
         user: dict[str, Any],
         evaluations: list[dict[str, Any]],
+        selected_evaluation_id: str | None = None,
     ) -> DresSession:
         local_id = secrets.token_urlsafe(32)
-        session = DresSession(local_id, dres_session_id, user, evaluations)
+        if selected_evaluation_id is None and evaluations:
+            selected_evaluation_id = str(evaluations[0].get("id"))
+        session = DresSession(
+            local_id,
+            dres_session_id,
+            user,
+            evaluations,
+            selected_evaluation_id=selected_evaluation_id,
+        )
         with self._lock:
             self._sessions[local_id] = session
         return session
