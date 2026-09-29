@@ -1,312 +1,130 @@
-# Video Retrieval System — AIC 2026
+# Hệ Thống Truy Vấn Video Đa Phương Thức — AIC 2026
 
-A full-stack, multimodal video retrieval engine supporting zero-shot semantic text-to-video search, temporal multi-event sequence matching, metadata filter search (OCR, Audio Transcript, Object Detection).
+Hệ thống truy vấn video tương tác đa phương thức (**Multimodal Video Retrieval System**) được nghiên cứu và phát triển bởi Team **TK22-LQDBD** phục vụ cuộc thi **AI Challenge TP. Hồ Chí Minh 2026**.
 
----
-
-## 🏗️ Prerequisites & Infrastructure
-
-The engine relies on Docker for vector similarity and text search databases:
-- **Qdrant** (`:6333`): High-performance vector database for dense feature embeddings and object payload filtering.
-- **Elasticsearch** (`:9200`): Fuzzy text search engine for OCR and Whisper transcript matching.
-
-### 1. Start Infrastructure Services
-Start the required databases using Docker Compose:
-```bash
-docker compose up -d
-```
-Verify that Qdrant (`http://localhost:6333`) and Elasticsearch (`http://localhost:9200`) are running.
+Hệ thống được thiết kế để giải quyết các bài toán cốt lõi của cuộc thi với thời gian phản hồi nhanh:
+- **Textual Known-Item Search (KIS):** Định vị chính xác video và keyframe mô tả sự kiện/cảnh quay từ câu truy vấn ngôn ngữ tự nhiên.
+- **Visual Question Answering (QA):** Tìm kiếm phân cảnh chứa câu trả lời và trích xuất thông tin trực quan (màu sắc, số lượng, chữ viết, hành động).
+- **Temporal Action/Event Retrieval (TRAKE):** Truy vấn chuỗi hành động diễn ra tuần tự theo thời gian ($E_1 \rightarrow E_2 \rightarrow \dots \rightarrow E_k$) trong cùng một video.
 
 ---
 
-## 📁 Data Folder Structure
+## 🛠️ Quy Trình Xử Lý Dữ Liệu Video (Preprocessing Pipeline)
 
-Ensure your `data/` directory is structured as follows at the root of the project:
+Dữ liệu video được xử lý offline qua 6 bước để chuẩn bị nguồn dữ liệu cho việc truy vấn:
 
-```text
-data/
-├── caption/                    # Multi-aspect shot captions (.json)
-│   └── <video_id>.json
-├── embedding/                  # Pre-extracted visual embedding .pt files
-│   ├── SigLIP/                 # e.g., SigLIP embeddings
-│   └── SigLIP2/                # e.g., SigLIP2 embeddings
-├── keyframe/                   # Extracted keyframe WebP images
-│   └── <video_id>/             # e.g., L21_V001/
-│       └── keyframe_<idx>.webp
-├── object_detection/           # YOLOE object detection outputs
-│   └── <video_id>/             # e.g., L21_V001/
-│       └── keyframe_<idx>.json
-├── ocr/                        # OCR outputs per model source
-│   ├── PaddleOCR-VL-1.6/       # e.g., PaddleOCR outputs
-│   └── PP-OCRv6/               # e.g., PP-OCRv6 outputs
-├── transcript/                 # Whisper audio transcript outputs
-│   └── <video_id>.json         # Transcribed speech segments per video
-├── shot/                       # Shot boundary JSON mappings
-│   └── all_scenes_<prefix>.json
-├── video/                      # Raw .mp4 video files
-│   └── <video_id>.mp4
-└── video_metadata.json         # Video FPS and duration metadata
-```
+| STT | Nguồn Dữ Liệu | Thuật Toán & Mô Hình Sử Dụng | Script / Notebook | Đầu Ra |
+| :---: | :--- | :--- | :--- | :--- |
+| **1** | **Trích xuất Keyframe & Tạo Embedding** | • **Keyframe:** Thuật toán so khớp độ tương đồng (similarity score) giữa các frame liên tiếp (không phụ thuộc vào shot detection).<br>• **Vision Embedding:** **SigLIP2** (`google/siglip2-giant-opt-patch16-384`, 1536d) và **Qwen3-VL-Embedding-2B** (2048d) hỗ trợ tiếng Việt trực tiếp. | `notebooks/aic2026-qwen3-vl-embedding.ipynb`<br>`scripts/ingest_named_vectors_incremental.py` | Keyframe ảnh (`.webp`) và vector ngữ nghĩa của từng keyframe. |
+| **2** | **Shot Detection** | **AutoShot** (Mô hình phân đoạn ranh giới cảnh quay). | `notebooks/autoshot-aic.ipynb` | Các phân cảnh quay trong video `[t_start, t_end]`. |
+| **3** | **Scene Text (OCR)** | **PP-OCRv6** kết hợp **PaddleOCR-VL-1.6**. | `data_processor/ocr/__init__.py`<br>`scripts/ingest_ocr_transcript_incremental.py` | Văn bản và vị trí (bounding box) xuất hiện trong khung hình. |
+| **4** | **Audio Transcript** | **OpenAI Whisper** (Mô hình nhận dạng giọng nói tự động). | `notebooks/aic2026-whisper.ipynb`<br>`scripts/ingest_ocr_transcript_incremental.py` | Lời thoại kèm mốc thời gian `[start_time, end_time]`. |
+| **5** | **Object Detection** | **YOLOE-26L** (Mô hình Open-Vocabulary Object Detection). | `notebooks/aic2026-yoloe-26l.ipynb` | Danh sách nhãn và số lượng đối tượng trong từng khung hình. |
+| **6** | **Shot Captioning** | **Gemini 2.5 Flash Lite** (via Vertex AI) mô tả cảnh + **Qwen3-Embedding-0.6B** (1024d) tạo vector mô tả. | `data_processor/caption`<br>`notebooks/aic2026-qwen3-embedding.ipynb` | Đoạn văn mô tả chi tiết và vector ngữ nghĩa của phân cảnh. |
 
 ---
 
-## 🎬 Multi-Aspect Shot Captioning (Gemini 2.5 Flash Lite)
+## 🔍 Cơ Chế Truy Vấn Cho Mỗi Nguồn Dữ Liệu (Retrieval Mechanisms)
 
-A multimodal video captioning pipeline using **Gemini 2.5 Flash Lite** via Vertex AI. For each shot, the engine dynamically samples up to 3 representative keyframes, aligns overlapping Whisper audio transcripts and OCR detections, and generates **7 structured visual aspects**:
-1. `[GÓC NHÌN & CỠ CẢNH]`: Camera framing, angles (top-down, low angle, eye-level), and camera motion (static, pan, zoom).
-2. `[CHỦ THỂ & HÀNH ĐỘNG]`: Primary subjects, postures (standing, co chân), limb movements, and prop interactions.
-3. `[VẬT THỂ & ĐẶC ĐIỂM TRỰC QUAN]`: Literal container colors (bát trắng, chảo đỏ), materials, shapes, and physical state changes (nở phồng, cắt đôi).
-4. `[BỐI CẢNH & KHÔNG GIAN]`: Indoor/outdoor environment, lighting, and spatial arrangement.
-5. `[CHỮ, LOGO & MÀN HÌNH]`: On-screen text, TV logos, timestamps, lecture slides, and geometric diagrams.
-6. `[DIỄN BIẾN THEO THỜI GIAN]`: Chronological progression across the shot (start → middle → end).
-7. `[TỔNG THỂ CẢNH QUAY]`: Concise 2–3 sentence natural Vietnamese narrative for semantic vector search.
+### 1. Text-Keyframe Similarity
+- Câu truy vấn được mã hóa bằng Text Encoder (**SigLIP2** hoặc **Qwen3-VL-Embedding-2B**, cả hai đều hỗ trợ tốt tiếng Việt).
+- Hệ thống gửi vector truy vấn tới **Qdrant** để tìm kiếm láng giềng gần nhất (Cosine Similarity) với các vector keyframe đã lưu.
+- Điểm số được chuẩn hóa và có thể kết hợp (fusion) điểm giữa các mô hình.
 
-Outputs are saved to `data/caption/<video_id>.json` with both full markdown text and normalized parsed dictionary keys.
+### 2. Text-Shot Caption Similarity
+- Câu truy vấn được tìm kiếm đối chiếu với mô tả của các phân cảnh:
+  - **Dense Semantic Search:** Mã hóa truy vấn bằng **Qwen3-Embedding** và tìm kiếm vector trên các khía cạnh mô tả shot trong Qdrant.
+  - **Lexical BM25 Search:** Tìm kiếm từ khóa chính xác trên toàn bộ văn bản caption lưu tại Elasticsearch.
+- Điểm số tương đồng của caption được kết hợp cùng điểm keyframe để tăng độ chính xác cho các câu truy vấn miêu tả hành động chi tiết.
 
-### 1. Configure Environment Variables
-Copy `.env.example` to `.env` and set your Google Cloud / Vertex AI credentials:
-```bash
-cp .env.example .env
-```
-Ensure your `.env` contains:
-```env
-LLM_PROVIDER=vertexai
-PROJECT_ID=your-gcp-project-id
-VERTEX_LOCATION=global
-MODEL_ID="gemini-2.5-flash-lite"
-```
+### 3. OCR / Transcript / Object Detection Filter
+Các bộ lọc điều kiện được áp dụng đồng thời (AND logic) để lọc bớt các kết quả không phù hợp:
+- **Bộ lọc OCR:** Tìm kiếm chuỗi ký tự trên Elasticsearch trong khoảng thời gian quanh keyframe ($\pm 5$ giây) hoặc toàn video.
+- **Bộ lọc Transcript:** Tìm kiếm lời thoại qua kết quả Whisper trong khoảng thời gian quanh keyframe ($\pm 2$ giây).
+- **Bộ lọc Object Detection:** Lọc trực tiếp trên payload của Qdrant theo nhãn đối tượng và số lượng đối tượng tối thiểu/tối đa trong khung hình (ví dụ: `person >= 2`).
 
-### 2. Run Caption Generation
+### 4. Thuật toán Temporal Search (Cho chuỗi sự kiện TRAKE)
+- Áp dụng khi tìm kiếm chuỗi hành động diễn ra tuần tự ($E_1 \rightarrow E_2 \rightarrow \dots \rightarrow E_k$):
+  1. Tìm kiếm độc lập từng sự kiện $E_i$ để lấy danh sách ứng viên keyframe.
+  2. Dùng thuật toán **Depth-First Search (DFS)** duyệt theo từng video để tìm chuỗi frame thỏa mãn:
+     - Thời gian tăng dần nghiêm ngặt: $t_1 < t_2 < \dots < t_k$.
+     - Khoảng cách giữa 2 sự kiện liên tiếp không vượt quá ngưỡng: $0 < \Delta \text{frame} \le \texttt{MAX\_FRAME\_GAP}$ (mặc định 2000 frame).
+  3. Xếp hạng chuỗi ứng viên theo điểm tương đồng trung bình của các sự kiện.
+  4. Hỗ trợ gom nhóm theo shot (Group Shots) hoặc theo video (Group Video) để tránh trùng lặp khung hình.
 
-#### A. Test Run on a Single Video (e.g. 5 shots only)
-```bash
-uv run python -m data_processor.caption --video_id L21_V001 --max_shots 5 --overwrite
-```
+---
 
-#### B. Process an Entire Video (All Shots)
-```bash
-uv run python -m data_processor.caption --video_id L21_V001 --concurrency 5
-```
+## 💻 Công Nghệ Sử Dụng (Tech Stack)
 
-#### C. Batch Process by Prefix (e.g. all L21 videos)
-```bash
-uv run python -m data_processor.caption --prefix L21 --concurrency 5
-```
-
-#### D. Batch Process All Videos in Dataset
-```bash
-uv run python -m data_processor.caption --all --concurrency 5
-```
-
-#### E. Smart Resume Capability
-The generator automatically tracks already captioned shots. If a batch run is stopped or interrupted:
-- Re-running the command automatically detects cached shots and **only processes the remaining uncaptioned shots**.
-- Use `--overwrite` if you want to regenerate all shots from scratch.
-
-#### CLI Arguments Reference
-| Flag | Type | Description |
+| Thành Phần | Công Nghệ | Vai Trò & Chức Năng |
 | :--- | :--- | :--- |
-| `--video_id <ID>` | `str` | Process a single video (e.g. `L21_V001`). |
-| `--prefix <PREFIX>` | `str` | Filter video IDs starting with a prefix (e.g. `L21`). |
-| `--all` | `flag` | Batch process all videos found in `data/shot/` and `data/keyframe/`. |
-| `--max_videos <N>` | `int` | Limit the total number of videos to process. |
-| `--max_shots <N>` | `int` | Limit shots per video (convenient for testing). |
-| `--concurrency <N>`| `int` | Max parallel API calls (default: `5`). |
-| `--overwrite` | `flag` | Re-generate captions even if the video JSON exists. |
+| **Vector Database** | **Qdrant** | • Lưu vision embedding của keyframe (`SigLIP2`, `Qwen3_VL_Embedding`).<br>• Payload lưu nhãn và số lượng đối tượng từ Object Detection.<br>• Lưu shot caption embedding (có quantize int4 để giảm dung lượng bộ nhớ). |
+| **Text Search Engine** | **Elasticsearch 8.15** | • Lưu dữ liệu văn bản OCR và audio transcript.<br>• Tìm kiếm toàn văn bản (full-text search) bằng thuật toán BM25 và fuzzy match. |
+| **Backend API** | **FastAPI + Uvicorn** | • Xây dựng RESTful API cho ứng dụng web và điều phối các luồng truy vấn.<br>• Tích hợp DRES Client để đăng nhập và nộp bài trực tiếp lên hệ thống thi. |
+| **Containerization** | **Docker & Docker Compose** | • Đóng gói và chạy toàn bộ ứng dụng (`app`, `qdrant`, `elasticsearch`) bằng một lệnh.<br>• Hỗ trợ chạy linh hoạt trên cả CPU và GPU NVIDIA. |
 
 ---
 
-## 🔄 Re-Ingesting Data (Before Running)
+## 🚀 Hướng Dẫn Chạy Ứng Dụng Bằng Docker
 
+### 1. Chuẩn bị File Cấu Hình
 
-Before running the retrieval system for the first time or after adding new data/embeddings, you **must ingest the data** into Qdrant and Elasticsearch.
-
-### Option 1: Automatic Re-Ingestion via `app.py`
-In `app.py`, set `re_ingest=True` in the `lifespan` handler:
-
-```python
-# app.py
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global system, video_metadata
-    # Set re_ingest=True to rebuild Qdrant & Elasticsearch indices on startup
-    system = RetrievalSystem(re_ingest=True)
-    video_metadata = load_video_metadata()
-    yield
-```
-
-Then launch the app (see below). Set back to `re_ingest=False` after the first run.
-
-### Option 2: Manual CLI Script Re-Ingestion
-To trigger data re-ingestion directly via Python CLI:
-
-```bash
-# Re-ingest ALL data (Embeddings, Object Detection, OCR, Transcripts)
-uv run python -c "from retrieval_system import RetrievalSystem; RetrievalSystem(re_ingest=True)"
-```
-
-Or re-ingest a specific module individually:
-```bash
-# Ingest Object Detection payload only
-uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalSystem(); sys.ingest_object_detection()"
-
-# Ingest OCR to Elasticsearch only
-uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalSystem(); sys.ingest_ocr()"
-
-# Ingest Transcripts to Elasticsearch only
-uv run python -c "from retrieval_system import RetrievalSystem; sys = RetrievalSystem(); sys.ingest_transcript()"
-```
-
----
-
-## 🚀 Running the Server
-
-Install Python dependencies using `uv`, generate video metadata, and start the FastAPI web application:
-
-```bash
-# 1. Install dependencies
-uv sync
-
-# 2. Generate FPS metadata (keyframe -> timestamp mapping)
-uv run python utils/video_metadata.py
-
-# 3. Run web application server
-uv run uvicorn app:app --reload
-```
-
-The web interface will be live at `http://localhost:8000`.
-
-## Kết nối và nộp bài DRES
-
-### Chạy thực tế với DRES chính thức
-
-Tạo `.env` cục bộ từ file mẫu và điền mật khẩu thật:
-
+Tạo file cấu hình `.env` từ file mẫu:
 ```bash
 cp .env.example .env
 ```
 
+Chỉnh sửa thông tin tài khoản DRES trong file `.env`:
 ```env
 DRES_BASE_URL=https://eventretrieval.one
 DRES_DEFAULT_USERNAME=team_197
-DRES_DEFAULT_PASSWORD=mat-khau-cua-doi
-DRES_REQUEST_TIMEOUT_SECONDS=10
+DRES_DEFAULT_PASSWORD=mat_khau_cua_doi
 DRES_COOKIE_SECURE=false
 ```
 
-Không commit `.env`; file này đã được khai báo trong `.gitignore`. Nếu ứng dụng
-được triển khai qua HTTPS, đặt `DRES_COOKIE_SECURE=true`.
+### 2. Khởi Chạy Ứng Dụng
 
-Khởi động hệ thống:
-
+#### Chạy trên CPU (Mặc định)
 ```bash
-docker compose up -d
-uv sync
-uv run --env-file .env uvicorn app:app --host 0.0.0.0 --port 8000
+docker compose up -d --build
 ```
 
-Mở `http://localhost:8000`, đăng nhập DRES, chọn evaluation đang `ACTIVE`, rồi
-chọn **Chế độ nộp** ở góc trên bên trái:
-
-- **KIS:** chọn keyframe hoặc dừng video tại đúng thời điểm rồi nhấn Submit.
-- **Q&A:** chọn kết quả, nhập câu trả lời ngắn và xác nhận. Payload có dạng
-  `QA-ANSWER-VIDEO_ID-TIME_MS`.
-- **TRAKE:** thêm nhiều semantic keyframe cùng video, sắp theo thời gian tăng
-  nghiêm ngặt rồi nộp chuỗi `TR-VIDEO_ID-FRAME_ID1,FRAME_ID2,...`.
-
-Hộp xác nhận hiển thị payload và đường gửi request trước khi nộp. DRES session
-được backend gắn vào query theo API DRES v2 và được che trên giao diện. Mọi lần
-nộp ở chế độ thực tế đều có thể ảnh hưởng điểm thi, vì vậy cần kiểm tra kỹ URL,
-evaluation, chế độ và payload trước khi xác nhận.
-
-Sau khi nộp, giao diện hiển thị riêng trạng thái tiếp nhận và verdict:
-
-- `CORRECT`: DRES đã nhận và đáp án đúng.
-- `WRONG`: DRES đã nhận nhưng đáp án sai; đây không phải lỗi truyền request.
-- `INDETERMINATE`: DRES chưa xác định được kết quả.
-- `UNDECIDABLE`: DRES không thể chấm tự động.
-- HTTP `202`: DRES đã nhận và đang chờ verdict.
-- HTTP `412`: DRES từ chối submission; gói tin không được báo thành công.
-
-Thẻ kết quả còn hiển thị HTTP status, `description`, evaluation, URL đích đã che
-session và JSON phản hồi nguyên bản từ DRES. Có thể sao chép cả payload lẫn phản
-hồi để kiểm tra hoặc trao đổi với ban tổ chức.
-
-### Chạy thử giao diện bằng Mock DRES
-
-Mock DRES dùng một evaluation duy nhất (`mock-final`) và cho phép chọn thủ công
-giữa KIS, Q&A và TRAKE. Cách này không gửi dữ liệu tới DRES chính thức và không
-cần sửa hoặc ghi đè `.env` thật.
-
-Khởi động hạ tầng:
-
+#### Chạy với GPU NVIDIA (Tăng tốc mô hình)
+Yêu cầu máy chủ đã cài [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html):
 ```bash
-docker compose up -d
-uv sync
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
-Trong terminal thứ nhất, chạy Mock DRES:
+### 3. Kiểm Tra Trạng Thái & Truy Cập
 
+Kiểm tra trạng thái các container:
 ```bash
-uv run uvicorn scripts.mock_dres_server:app --host 127.0.0.1 --port 19100
+docker compose ps
 ```
 
-Trong terminal thứ hai, chạy ứng dụng với cấu hình mock ở cổng riêng:
-
+Xem log ứng dụng:
 ```bash
-uv run --env-file .env.mock.example uvicorn app:app --host 127.0.0.1 --port 8765
+docker compose logs -f app
 ```
 
-Sau đó:
+Mở trình duyệt truy cập giao diện tại:
+👉 **`http://localhost:8000`**
 
-1. Mở `http://127.0.0.1:8765`.
-2. Chọn **Đăng nhập DRES** → **Đăng nhập mặc định**.
-3. Chọn evaluation `MOCK • Chung kết AIC 2026`.
-4. Chọn KIS, Q&A hoặc TRAKE trong danh sách **Chế độ nộp** và nộp thử.
-5. Mở `http://127.0.0.1:19100/debug` để xem method, URL, query và JSON payload
-   mà Mock DRES đã nhận.
-6. Tại trang Debug, chọn **Phản hồi cho lần nộp kế tiếp** để thử `CORRECT`,
-   `WRONG`, `INDETERMINATE`, `UNDECIDABLE`, `PENDING`, `REJECTED` hoặc
-   `SESSION_EXPIRED`. Sau một request, Mock tự trở về `CORRECT`.
-
-Không chạy ứng dụng thực tế và ứng dụng mock trên cùng một cổng. Sau khi đổi
-cấu hình DRES, phải khởi động lại tiến trình ứng dụng vì DRES client được tạo
-khi server khởi động.
-
-### Chạy kiểm thử tự động
-
-Chạy toàn bộ test của tính năng đăng nhập, session, payload và Mock DRES:
+### 4. Chạy Lệnh Tiện Ích Trong Docker (Nếu cần)
 
 ```bash
-uv run python -m unittest \
-  tests.test_dres_api \
-  tests.test_mock_dres_server \
-  tests.test_dres_submission \
-  tests.test_dres_client \
-  tests.test_dres_session
+# Trích xuất metadata FPS video (keyframe -> timestamp)
+docker compose run --rm app python utils/video_metadata.py
+
+# Ingest lại dữ liệu vào Qdrant & Elasticsearch
+docker compose run --rm app python -c "from retrieval_system import RetrievalSystem; RetrievalSystem(re_ingest=True)"
+
+# Chạy thử nghiệm truy vấn qua CLI
+docker compose run --rm app python skills/aic-video-retrieval/scripts/query_runner.py --query "người đi xe máy" --limit 10
 ```
 
-Kết quả mong đợi: `Ran 24 tests` và `OK`.
-
-Kiểm tra cú pháp các module JavaScript của luồng nộp bài:
-
+### 5. Dừng Ứng Dụng
 ```bash
-node --check static/js/dres-session.js
-node --check static/js/dres-result.js
-node --check static/js/submission.js
-node --check static/js/trake.js
-```
-
-### Dừng hệ thống
-
-Nhấn `Ctrl+C` trong các terminal đang chạy Uvicorn, sau đó dừng hạ tầng:
-
-```bash
+# Dừng container (giữ nguyên dữ liệu database)
 docker compose down
 ```
-
-Kế hoạch, tiêu chí nghiệm thu và hướng dẫn giao diện chi tiết:
-
-- [`KE_HOACH_DRES_LOGIN_SUBMIT.md`](KE_HOACH_DRES_LOGIN_SUBMIT.md)
-- [`KE_HOACH_HOAN_THIEN_PHAN_HOI_SUBMIT_DRES.md`](KE_HOACH_HOAN_THIEN_PHAN_HOI_SUBMIT_DRES.md)
-- [`HUONG_DAN_TEST_GIAO_DIEN_DRES.md`](HUONG_DAN_TEST_GIAO_DIEN_DRES.md)

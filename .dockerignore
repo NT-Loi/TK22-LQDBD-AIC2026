@@ -1,0 +1,39 @@
+# Version control
+.git/
+.gitignore
+
+# Python virtual environments & bytecode
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Dataset and database data (MUST be mounted via volumes, not baked into image)
+data/
+qdrant/
+es_data/
+
+# Logs
+*.log
+logs/
+
+# Sensitive env files
+.env
+.env.*
+!.env.example
+!.env.mock.example
+
+# Temporary / evaluation / test outputs
+tests/
+technical_report/
+sample_queries/
+submission/
+retrieval_queries/
+query-p1-groupA/
+
+# IDE / System
+.vscode/
+.idea/
+.DS_Store

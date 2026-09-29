@@ -10,8 +10,9 @@ es_data
 *.log
 .*
 !.gitignore
-!.env.example
-!.env.mock.example
+!.dockerignore
+!*.example
+
 
 technical_report
 

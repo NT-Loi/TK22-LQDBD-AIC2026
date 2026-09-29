@@ -258,6 +258,11 @@ class SearchQuery(BaseModel):
 async def index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
 
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "system_ready": system is not None}
+
+
 @app.get("/api/models")
 async def get_models():
     # Only advertise models whose query encoders initialized successfully.
