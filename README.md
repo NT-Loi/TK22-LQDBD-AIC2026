@@ -15,10 +15,10 @@ Dữ liệu video được xử lý offline qua 6 bước để chuẩn bị ngu
 
 | STT | Nguồn Dữ Liệu | Thuật Toán & Mô Hình Sử Dụng | Script / Notebook | Đầu Ra |
 | :---: | :--- | :--- | :--- | :--- |
-| **1** | **Trích xuất Keyframe & Tạo Embedding** | • **Keyframe:** Thuật toán so khớp độ tương đồng (similarity score) giữa các frame liên tiếp (không phụ thuộc vào shot detection).<br>• **Vision Embedding:** **SigLIP2** (`google/siglip2-giant-opt-patch16-384`, 1536d) và **Qwen3-VL-Embedding-2B** (2048d) hỗ trợ tiếng Việt trực tiếp. | `notebooks/aic2026-qwen3-vl-embedding.ipynb`<br>`scripts/ingest_named_vectors_incremental.py` | Keyframe ảnh (`.webp`) và vector ngữ nghĩa của từng keyframe. |
+| **1** | **Trích xuất Keyframe & Tạo Embedding** | • **Keyframe:** Thuật toán so khớp độ tương đồng (similarity score) giữa các frame liên tiếp (không phụ thuộc vào shot detection).<br>• **Vision Embedding:** **SigLIP2** (`google/siglip2-giant-opt-patch16-384`, 1536d) và **Qwen3-VL-Embedding-2B** (2048d) hỗ trợ tiếng Việt trực tiếp. | `notebooks/aic2026-qwen3-vl-embedding.ipynb` | Keyframe ảnh (`.webp`) và vector ngữ nghĩa của từng keyframe. |
 | **2** | **Shot Detection** | **AutoShot** (Mô hình phân đoạn ranh giới cảnh quay). | `notebooks/autoshot-aic.ipynb` | Các phân cảnh quay trong video `[t_start, t_end]`. |
-| **3** | **Scene Text (OCR)** | **PP-OCRv6** kết hợp **PaddleOCR-VL-1.6**. | `data_processor/ocr/__init__.py`<br>`scripts/ingest_ocr_transcript_incremental.py` | Văn bản và vị trí (bounding box) xuất hiện trong khung hình. |
-| **4** | **Audio Transcript** | **OpenAI Whisper** (Mô hình nhận dạng giọng nói tự động). | `notebooks/aic2026-whisper.ipynb`<br>`scripts/ingest_ocr_transcript_incremental.py` | Lời thoại kèm mốc thời gian `[start_time, end_time]`. |
+| **3** | **Scene Text (OCR)** | **PP-OCRv6** kết hợp **PaddleOCR-VL-1.6**. | `notebooks/aic2026-paddleocr-v6.ipynb` | Văn bản và vị trí (bounding box) xuất hiện trong khung hình. |
+| **4** | **Audio Transcript** | **OpenAI Whisper** (Mô hình nhận dạng giọng nói tự động). | `notebooks/aic2026-whisper.ipynb` | Lời thoại kèm mốc thời gian `[start_time, end_time]`. |
 | **5** | **Object Detection** | **YOLOE-26L** (Mô hình Open-Vocabulary Object Detection). | `notebooks/aic2026-yoloe-26l.ipynb` | Danh sách nhãn và số lượng đối tượng trong từng khung hình. |
 | **6** | **Shot Captioning** | **Gemini 2.5 Flash Lite** (via Vertex AI) mô tả cảnh + **Qwen3-Embedding-0.6B** (1024d) tạo vector mô tả. | `data_processor/caption`<br>`notebooks/aic2026-qwen3-embedding.ipynb` | Đoạn văn mô tả chi tiết và vector ngữ nghĩa của phân cảnh. |
 
