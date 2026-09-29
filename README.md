@@ -116,15 +116,15 @@ Mở trình duyệt truy cập giao diện tại:
 # Trích xuất metadata FPS video (keyframe -> timestamp)
 docker compose run --rm app python utils/video_metadata.py
 
-# Ingest lại dữ liệu vào Qdrant & Elasticsearch
+# Ingest dữ liệu vào Qdrant & Elasticsearch
 docker compose run --rm app python -c "from retrieval_system import RetrievalSystem; RetrievalSystem(re_ingest=True)"
 
-# Chạy thử nghiệm truy vấn qua CLI
+# Chạy truy vấn qua CLI
 docker compose run --rm app python skills/aic-video-retrieval/scripts/query_runner.py --query "người đi xe máy" --limit 10
 ```
 
 ### 5. Dừng Ứng Dụng
 ```bash
-# Dừng container (giữ nguyên dữ liệu database)
+# Dừng container
 docker compose down
 ```
